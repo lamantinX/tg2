@@ -1,0 +1,26 @@
+[project]
+name = "tg2"
+version = "0.2.0"
+description = "MVP for managing disclosed AI-driven Telegram accounts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.21.0",
+    "aiosqlite>=0.20.0",
+    "apscheduler>=3.10.4",
+    "fastapi>=0.116.1",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.10.1",
+    "PySocks>=1.7.1",
+    "python-dotenv>=1.1.1",
+    "sqlalchemy>=2.0.43",
+    "telethon>=1.40.0",
+    "uvicorn[standard]>=0.35.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

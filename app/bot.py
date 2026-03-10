@@ -126,6 +126,7 @@ def format_help() -> str:
 - /login_finish <account_id> <code> [password] - завершить вход по коду.
 - /login_password <account_id> <password> - завершить вход с 2FA.
 - /audit_accounts - проверить аккаунты и очистить привязки у неактивных сессий.
+- /character_info <account_id> - посмотреть профиль персонажа аккаунта.
 
 3. Привязки и чаты
 - /chats - список всех привязок.
@@ -252,6 +253,7 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                 BotCommand(command="cancel", description="Сбросить мастер"),
                 BotCommand(command="accounts", description="Список аккаунтов"),
                 BotCommand(command="audit_accounts", description="Проверить аккаунты"),
+                BotCommand(command="character_info", description="Инфо о персонаже"),
                 BotCommand(command="chats", description="Список привязок"),
                 BotCommand(command="binding_settings", description="Настройки привязки"),
                 BotCommand(command="set_binding_interval", description="Интервал привязки"),
@@ -302,10 +304,15 @@ def build_bot() -> tuple[Bot, Dispatcher]:
             if not accounts:
                 text = "Аккаунтов нет."
             else:
-                text = "\n".join(
-                    f"{account.id}: {account.phone} | {account.auth_status} | active={int(account.is_active)}"
-                    for account in accounts
-                )
+                lines = []
+                for acc in accounts:
+                    char_name = acc.character.name if acc.character else "не назначен"
+                    lines.append(
+                        f"ID: {acc.id} | {acc.phone}\n"
+                        f"Статус: {acc.auth_status} | Активен: {int(acc.is_active)}\n"
+                        f"Персонаж: {char_name}\n"
+                    )
+                text = "\n".join(lines)
             await message.answer(text, reply_markup=main_menu_keyboard())
 
     async def send_bindings_list(target: Message | CallbackQuery) -> None:
@@ -422,6 +429,37 @@ def build_bot() -> tuple[Bot, Dispatcher]:
         async with SessionLocal() as session:
             report = await AccountService(session).audit_accounts()
             await message.answer(format_audit_report(report), reply_markup=main_menu_keyboard())
+
+    @dp.message(Command("character_info"))
+    async def character_info_handler(message: Message) -> None:
+        parts = (message.text or "").split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            await message.answer("Формат: /character_info <account_id>", reply_markup=back_keyboard())
+            return
+        
+        async with SessionLocal() as session:
+            account = await AccountService(session).get_account(int(parts[1]))
+            if not account:
+                await message.answer("Аккаунт не найден.", reply_markup=back_keyboard())
+                return
+            
+            char = account.character
+            if not char:
+                await message.answer("Этому аккаунту не назначен персонаж.", reply_markup=back_keyboard())
+                return
+            
+            text = (
+                f"👤 Персонаж: {char.name}\n"
+                f"🎂 Возраст: {char.age or '?'}\n"
+                f"💼 Занятие: {char.occupation or '-'}\n"
+                f"📍 Локация: {char.location or '-'}\n\n"
+                f"🎭 Характер: {char.personality or '-'}\n\n"
+                f"❤️ Любит: {char.likes or '-'}\n"
+                f"💔 Не любит: {char.dislikes or '-'}\n\n"
+                f"🗣 Стиль речи: {char.speech_style or '-'}\n\n"
+                f"ℹ️ История: {char.background or '-'}"
+            )
+            await message.answer(text, reply_markup=main_menu_keyboard())
 
     @dp.message(Command("add_account"))
     async def add_account_handler(message: Message) -> None:
@@ -575,10 +613,15 @@ def build_bot() -> tuple[Bot, Dispatcher]:
             if not accounts:
                 text = "Аккаунтов нет."
             else:
-                text = "\n".join(
-                    f"{account.id}: {account.phone} | {account.auth_status} | active={int(account.is_active)}"
-                    for account in accounts
-                )
+                lines = []
+                for acc in accounts:
+                    char_name = acc.character.name if acc.character else "не назначен"
+                    lines.append(
+                        f"ID: {acc.id} | {acc.phone}\n"
+                        f"Статус: {acc.auth_status} | Активен: {int(acc.is_active)}\n"
+                        f"Персонаж: {char_name}\n"
+                    )
+                text = "\n".join(lines)
             await callback.message.answer(text, reply_markup=main_menu_keyboard())
             await callback.answer()
 

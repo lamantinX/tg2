@@ -33,12 +33,23 @@ def configure_logging() -> None:
         root.addHandler(file_handler)
 
 
+from app.proxy_manager import proxy_manager
+from app.db import Base, engine, ensure_schema, SessionLocal
+from app.services import CharacterService
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     await ensure_schema()
+    
+    # Инициализация менеджера прокси и персонажей
+    async with SessionLocal() as db:
+        await proxy_manager.initialize_from_db(db)
+        char_service = CharacterService(db)
+        await char_service.ensure_default_characters()
+        
     start_scheduler()
     yield
 

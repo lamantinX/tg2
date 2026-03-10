@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIService
 from app.decision_engine import DecisionContext, decision_engine
-from app.repositories import AccountRepository, BindingRepository, MessageLogRepository, ReplyTaskRepository
+from app.repositories import AccountRepository, BindingRepository, CharacterRepository, MessageLogRepository, ReplyTaskRepository
 from app.telegram_client import TelegramAccountClient
+from app.character_engine import DEFAULT_CHARACTERS
 
 
 audit_logger = logging.getLogger("tg2.audit")
@@ -23,10 +24,11 @@ def configure_audit_logger() -> None:
         handler.setFormatter(formatter)
         audit_logger.addHandler(handler)
         audit_logger.setLevel(logging.INFO)
-
+from app.proxy_manager import proxy_manager
 
 class AccountService:
     def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.repo = AccountRepository(session)
         self.binding_repo = BindingRepository(session)
         configure_audit_logger()
@@ -36,17 +38,32 @@ class AccountService:
         if existing:
             return existing
         session_name = phone.replace("+", "").replace(" ", "")
-        return await self.repo.create(phone=phone, session_name=session_name, proxy_url=proxy_url)
+        
+        # Assign a random character if available
+        char_repo = CharacterRepository(self.session)
+        chars = await char_repo.list()
+        character_id = None
+        if chars:
+            import random
+            character_id = random.choice(chars).id
+            
+        return await self.repo.create(phone=phone, session_name=session_name, proxy_url=proxy_url, character_id=character_id)
 
     async def list_accounts(self) -> list[object]:
         return await self.repo.list()
+
+    async def get_account(self, account_id: int) -> object | None:
+        return await self.repo.get(account_id)
 
     async def request_login_code(self, account_id: int) -> str:
         account = await self.repo.get(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             if await tg.is_authorized():
                 await self.repo.mark_authorized(account)
@@ -64,7 +81,10 @@ class AccountService:
         if not account.phone_code_hash and account.auth_status != "authorized":
             raise ValueError("Login code was not requested for this account")
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Прокси уже должен быть назначен при запросе кода, но на всякий случай проверяем
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             status = await tg.complete_login(
                 phone=account.phone,
@@ -85,7 +105,10 @@ class AccountService:
         if account.auth_status not in {"code_requested", "authorized"} and not account.phone_code_hash:
             raise ValueError("Login code was not requested for this account")
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             status = await tg.complete_password_login(password=password)
             if status == "authorized":
@@ -105,7 +128,10 @@ class AccountService:
         }
         for account in accounts:
             report["audited"] += 1
-            tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+            # Получаем/обновляем прокси через менеджер
+            proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+            tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
             try:
                 status = await tg.check_health()
             finally:
@@ -180,8 +206,11 @@ class BindingService:
             raise ValueError(f"Account {account_id} is not active and authorized")
         self._validate_settings(interval_minutes, interval_minutes, context_message_count)
 
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.repo.session)
+
         # Проверяем участие аккаунта в чате и вступаем, если он не состоит в нём
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             is_member = await tg.check_chat_membership(chat_ref)
             if not is_member:
@@ -317,6 +346,7 @@ class BindingService:
 
 class ChatAutomationService:
     def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.account_repo = AccountRepository(session)
         self.binding_repo = BindingRepository(session)
         self.message_log_repo = MessageLogRepository(session)
@@ -337,7 +367,10 @@ class ChatAutomationService:
         if account.auth_status != "authorized" or not account.is_active:
             raise ValueError(f"Account {account_id} is not active and authorized")
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             # Проверяем участие и вступаем, если нужно (например, при ручном вызове generate_once)
             try:
@@ -352,8 +385,9 @@ class ChatAutomationService:
             ctx = DecisionContext(
                 messages=context,
                 last_bot_post_at=last_bot_post_at,
-                last_message_at=None,   # нет метаданных в текстовом списке
+                last_message_at=context[-1]["date"] if context else None,
                 bot_name=getattr(account, "username", None),
+                character=getattr(account, "character", None),
             )
             result = decision_engine.decide(ctx)
             if not result.should_send:
@@ -369,6 +403,7 @@ class ChatAutomationService:
                 context_messages=context,
                 system_prompt=system_prompt,
                 reaction_type=result.reaction_type,
+                character=getattr(account, "character", None),
             )
             msg_id = await tg.send_message(chat_ref, content)
             await self.message_log_repo.add(account_id=account_id, chat_ref=chat_ref, content=content, msg_id=msg_id)
@@ -401,7 +436,10 @@ class ChatAutomationService:
         username = group_details.get("username", None)
         messages = group_details.get("messages", [])
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             chat_ref = await tg.create_group(title=title, about=about, username=username, pinned_post=None)
             
@@ -421,7 +459,10 @@ class ChatAutomationService:
         if account is None or account.auth_status != "authorized" or not account.is_active:
             return
 
-        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+        # Получаем/обновляем прокси через менеджер
+        proxy_url = await proxy_manager.get_proxy_for_account(binding.account_id, self.session)
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             recent_msgs = await tg.fetch_recent_detailed(binding.chat_ref, limit=15)
             for msg in recent_msgs:
@@ -470,12 +511,16 @@ class ChatAutomationService:
                 if not account or not account.is_active or account.auth_status != "authorized":
                     return
 
-                tg = TelegramAccountClient(session_name=account.session_name, proxy_url=account.proxy_url)
+                # Получаем/обновляем прокси через менеджер
+                proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+
+                tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
                 try:
                     context = await tg.fetch_recent_messages(task.chat_ref, limit=binding.context_message_count)
                     ctx = DecisionContext(
                         messages=context,
                         last_bot_post_at=getattr(binding, "last_posted_at", None),
+                        last_message_at=context[-1]["date"] if context else None,
                         bot_name=getattr(account, "username", None),
                     )
                     decision = decision_engine.decide(ctx)
@@ -492,6 +537,7 @@ class ChatAutomationService:
                         context_messages=context,
                         system_prompt=binding.system_prompt,
                         reaction_type=decision.reaction_type,
+                        character=getattr(account, "character", None),
                     )
                     msg_id = await tg.send_message(task.chat_ref, content, reply_to=task.trigger_msg_id)
                     await self.message_log_repo.add(account_id=task.account_id, chat_ref=task.chat_ref, content=content, msg_id=msg_id)
@@ -506,3 +552,26 @@ class ChatAutomationService:
                     await tg.disconnect()
 
         await asyncio.gather(*(process_one(task) for task in tasks))
+
+
+class CharacterService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.repo = CharacterRepository(session)
+
+    async def list_characters(self) -> list[object]:
+        return await self.repo.list()
+
+    async def ensure_default_characters(self) -> None:
+        count = await self.repo.count()
+        if count == 0:
+            logging.getLogger("tg2.services").info("Initializing default characters...")
+            for char_data in DEFAULT_CHARACTERS:
+                await self.repo.create(**char_data)
+
+    async def assign_character(self, account_id: int, character_id: int) -> None:
+        account_repo = AccountRepository(self.session)
+        account = await account_repo.get(account_id)
+        if account:
+            account.character_id = character_id
+            await self.session.commit()

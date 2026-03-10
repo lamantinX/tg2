@@ -8,13 +8,17 @@ from app.schemas import (
     BindingCreate,
     BindingRead,
     BindingUpdate,
+    CharacterRead,
+    CharacterAssignRequest,
     GenerateMessageRequest,
     GroupCreateRequest,
     LoginCodeRequest,
     LoginCompleteRequest,
     LoginPasswordRequest,
 )
-from app.services import AccountService, BindingService, ChatAutomationService
+from app.services import AccountService, BindingService, CharacterService, ChatAutomationService
+
+from app.proxy_manager import proxy_manager
 
 router = APIRouter()
 
@@ -22,6 +26,33 @@ router = APIRouter()
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/proxy/stats")
+async def get_proxy_stats() -> dict:
+    return await proxy_manager.get_stats()
+
+
+@router.post("/proxy/check")
+async def check_proxies(session: AsyncSession = Depends(get_session)) -> dict:
+    """Принудительно запускает проверку здоровья всех прокси"""
+    await proxy_manager.health_check_all(session)
+    return {"status": "started"}
+
+
+@router.post("/proxy/rotate/{account_id}")
+async def rotate_account_proxy(account_id: int, session: AsyncSession = Depends(get_session)) -> dict:
+    """Принудительно меняет прокси для конкретного аккаунта"""
+    # Удаляем текущую привязку
+    async with proxy_manager._lock:
+        if account_id in proxy_manager.account_to_session:
+            session_id = proxy_manager.account_to_session.pop(account_id)
+            if session_id in proxy_manager.sessions:
+                proxy_manager.sessions[session_id].unassign_account(account_id)
+    
+    # Получаем новый прокси
+    proxy_url = await proxy_manager.get_proxy_for_account(account_id, session)
+    return {"proxy_url": proxy_url}
 
 
 @router.get("/accounts", response_model=list[AccountRead])
@@ -32,6 +63,17 @@ async def list_accounts(session: AsyncSession = Depends(get_session)) -> list[ob
 @router.post("/accounts", response_model=AccountRead)
 async def create_account(payload: AccountCreate, session: AsyncSession = Depends(get_session)) -> object:
     return await AccountService(session).create_account(phone=payload.phone, proxy_url=payload.proxy_url)
+
+
+@router.get("/characters", response_model=list[CharacterRead])
+async def list_characters(session: AsyncSession = Depends(get_session)) -> list[object]:
+    return await CharacterService(session).list_characters()
+
+
+@router.post("/accounts/character/assign")
+async def assign_character(payload: CharacterAssignRequest, session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    await CharacterService(session).assign_character(account_id=payload.account_id, character_id=payload.character_id)
+    return {"status": "assigned"}
 
 
 @router.post("/accounts/audit")

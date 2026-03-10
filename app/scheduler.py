@@ -5,6 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.db import SessionLocal
 from app.services import BindingService, ChatAutomationService
+from app.proxy_manager import proxy_manager
 
 scheduler = AsyncIOScheduler()
 logger = logging.getLogger("tg2.scheduler")
@@ -106,6 +107,16 @@ async def tick_chat_automation() -> None:
             logger.error("error processing reply tasks: %s", exc)
 
 
+async def tick_proxy_health() -> None:
+    """Периодическая проверка здоровья прокси и переназначение если нужно"""
+    async with SessionLocal() as session:
+        logger.info("checking proxy health...")
+        try:
+            await proxy_manager.health_check_all(session)
+        except Exception:
+            logger.exception("failed to health check proxies")
+
+
 def start_scheduler() -> None:
     configure_scheduler_logging()
     if scheduler.running:
@@ -113,6 +124,8 @@ def start_scheduler() -> None:
         return
     if scheduler.get_job("chat-automation") is None:
         scheduler.add_job(tick_chat_automation, "interval", seconds=60, id="chat-automation", max_instances=2)
+    if scheduler.get_job("proxy-health") is None:
+        scheduler.add_job(tick_proxy_health, "interval", minutes=5, id="proxy-health")
     scheduler.start()
     logger.info("scheduler started")
 
@@ -132,6 +145,8 @@ def restart_scheduler() -> None:
             pass
     if scheduler.get_job("chat-automation") is None:
         scheduler.add_job(tick_chat_automation, "interval", seconds=60, id="chat-automation", max_instances=2)
+    if scheduler.get_job("proxy-health") is None:
+        scheduler.add_job(tick_proxy_health, "interval", minutes=5, id="proxy-health")
     scheduler.start()
     logger.info("scheduler restarted manually")
 

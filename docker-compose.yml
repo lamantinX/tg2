@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: tg2-api
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  bot:
+    build: .
+    container_name: tg2-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: python -m app.bot_runner
+
+volumes:
+  data:

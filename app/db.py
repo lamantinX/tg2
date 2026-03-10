@@ -64,6 +64,14 @@ async def ensure_schema() -> None:
             if "msg_id" not in ml_cols:
                 await connection.execute(text("ALTER TABLE message_logs ADD COLUMN msg_id INTEGER NULL"))
 
+        if "telegram_accounts" in table_names:
+            ta_rows = await connection.execute(text("PRAGMA table_info(telegram_accounts)"))
+            ta_cols = {row[1] for row in ta_rows.all()}
+            if "proxy_session_id" not in ta_cols:
+                await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN proxy_session_id VARCHAR(128) NULL"))
+            if "character_id" not in ta_cols:
+                await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN character_id INTEGER NULL"))
+
         await connection.execute(
             text(
                 "UPDATE chat_bindings "
@@ -76,3 +84,7 @@ async def ensure_schema() -> None:
                 "context_message_count = COALESCE(context_message_count, 12)"
             )
         )
+        
+        # Create characters table if not exists (base class handles it usually if we call create_all)
+        # But since we are doing manual ensure_schema, let's just use create_all for missing tables
+        await connection.run_sync(Base.metadata.create_all)

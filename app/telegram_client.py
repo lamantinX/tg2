@@ -130,7 +130,7 @@ class TelegramAccountClient:
         await client.sign_in(password=password)
         return "authorized"
 
-    async def fetch_recent_messages(self, chat_ref: str, limit: int = 12) -> list[str]:
+    async def fetch_recent_messages(self, chat_ref: str, limit: int = 12) -> list[dict]:
         logger.debug("fetch_recent_messages session=%s chat_ref=%s limit=%s", self.session_name, chat_ref, limit)
         client = await self.connect()
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
@@ -139,12 +139,28 @@ class TelegramAccountClient:
         fetched_total = 0
         async for message in client.iter_messages(entity, limit=limit * 3):
             if message.message and not message.out:
-                messages.append(message.message)
+                sender_name = "Участник"
+                try:
+                    sender = await message.get_sender()
+                    if sender:
+                        if hasattr(sender, 'first_name') and sender.first_name:
+                            sender_name = sender.first_name
+                            if hasattr(sender, 'last_name') and sender.last_name:
+                                sender_name += f" {sender.last_name}"
+                        elif hasattr(sender, 'title') and sender.title:
+                            sender_name = sender.title
+                        elif hasattr(sender, 'username') and sender.username:
+                            sender_name = sender.username
+                except Exception:
+                    pass
+
+                messages.append({"sender": sender_name, "text": message.message, "date": message.date})
                 fetched_total += 1
                 if fetched_total >= limit:
                     break
         logger.debug("fetch_recent_messages session=%s chat_ref=%s fetched=%s (own excluded)", self.session_name, chat_ref, len(messages))
         return list(reversed(messages))
+
 
     async def fetch_recent_detailed(self, chat_ref: str, limit: int = 15) -> list[dict]:
         client = await self.connect()

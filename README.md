@@ -1,4 +1,4 @@
-﻿# tg2 MVP
+# tg2 MVP
 
 MVP for a Telegram-controlled service that manages authorized Telegram user sessions and posts AI-generated messages with explicit disclosure.
 
@@ -128,3 +128,48 @@ Supported examples:
 - OpenAI integration uses the Responses API when `OPENAI_API_KEY` is configured.
 - If OpenAI is unavailable, generation falls back to a local stub so the worker does not crash.
 - Avatar upload and pinned post expansion are still limited in this MVP.
+
+## Deployment
+
+### Prerequisites
+
+- Docker and Docker Compose installed on the server.
+- `.env` file configured with production values.
+
+### Quick Deploy (Linux/macOS)
+
+```bash
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
+```
+
+### Quick Deploy (Windows PowerShell)
+
+```powershell
+.\scripts\deploy.ps1
+```
+
+### Manual Docker Deployment
+
+1. Build and start containers:
+```bash
+docker-compose up -d --build
+```
+
+2. Check logs:
+```bash
+docker-compose logs -f
+```
+
+3. Stop services:
+```bash
+docker-compose down
+```
+
+### Data Persistence
+
+The project uses a local `./data` directory mapped to `/app/data` inside the containers. This ensures that:
+- SQLite database (`app.db`)
+- Telegram sessions (`sessions/`)
+- Application logs (`logs/`)
+are preserved between container restarts and updates.

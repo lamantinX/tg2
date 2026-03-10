@@ -14,6 +14,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from app.models import Character
 
 logger = logging.getLogger("tg2.decision")
 
@@ -78,49 +79,55 @@ _DISPUTE_KEYWORDS  = ("нет", "не согласен", "неправда", "д
                       "ты не прав", "врёшь", "неверно")
 
 
-def _detect_question(messages: list[str]) -> bool:
+def _detect_question(messages: list[dict]) -> bool:
     """Есть ли вопрос в последних 5 сообщениях."""
     tail = messages[-5:] if len(messages) >= 5 else messages
     for m in tail:
-        ml = m.lower()
+        ml = m["text"].lower()
         if any(kw in ml for kw in _QUESTION_KEYWORDS):
             return True
     return False
 
 
-def _detect_dispute(messages: list[str]) -> bool:
+def _detect_dispute(messages: list[dict]) -> bool:
     """Есть ли признаки спора в последних 5 сообщениях."""
     tail = messages[-5:] if len(messages) >= 5 else messages
     for m in tail:
-        ml = m.lower()
+        ml = m["text"].lower()
         if any(kw in ml for kw in _DISPUTE_KEYWORDS):
             return True
     return False
 
 
-def _detect_interesting_topic(messages: list[str]) -> bool:
-    """Обсуждается ли «интересная» для бота тема (из LIKES)."""
+def _detect_interesting_topic(messages: list[dict], character: Character | None = None) -> bool:
+    """Обсуждается ли «интересная» для бота тема."""
     tail = messages[-5:] if len(messages) >= 5 else messages
-    combined = " ".join(tail).lower()
-    return any(like.lower() in combined for like in BOT_PERSONALITY["likes"])
+    combined = " ".join(m["text"] for m in tail).lower()
+    
+    likes = BOT_PERSONALITY["likes"]
+    if character and character.likes:
+        # Пытаемся распарсить как список или строку через запятую
+        likes = [l.strip().lower() for l in character.likes.split(",")]
+        
+    return any(like.lower() in combined for like in likes)
 
 
-def _detect_bot_mentioned(messages: list[str], bot_name: str | None) -> bool:
+def _detect_bot_mentioned(messages: list[dict], bot_name: str | None) -> bool:
     """Упомянули ли имя бота в последних 3 сообщениях."""
     if not bot_name:
         return False
     tail = messages[-3:] if len(messages) >= 3 else messages
     name_lower = bot_name.lower()
-    return any(name_lower in m.lower() for m in tail)
+    return any(name_lower in m["text"].lower() for m in tail)
 
 
-def _count_unique_recent_authors(messages: list[str]) -> int:
+def _count_unique_recent_authors(messages: list[dict]) -> int:
     """
-    Упрощённая эвристика: считаем сообщения за «активное обсуждение».
-    Так как у нас только тексты (без метаданных об авторах), используем
-    количество непустых сообщений в хвосте — если > 5, считаем «много».
+    Считаем количество уникальных авторов за «активное обсуждение».
     """
-    return len([m for m in messages[-10:] if m.strip()])
+    tail = messages[-10:] if len(messages) >= 10 else messages
+    authors = {m["sender"] for m in tail if m["text"].strip()}
+    return len(authors)
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +137,8 @@ def _count_unique_recent_authors(messages: list[str]) -> int:
 @dataclass
 class DecisionContext:
     """Контекст для принятия решения."""
-    messages: list[str] = field(default_factory=list)
-    """Последние сообщения из чата (тексты)."""
+    messages: list[dict] = field(default_factory=list)
+    """Последние сообщения из чата (список {"sender": "...", "text": "..."})."""
 
     last_bot_post_at: Optional[datetime] = None
     """Когда бот последний раз писал в этот чат (UTC)."""
@@ -141,6 +148,9 @@ class DecisionContext:
 
     bot_name: Optional[str] = None
     """Имя (username) бота для детекции упоминаний."""
+
+    character: Optional[Character] = None
+    """Персонаж бота."""
 
 
 @dataclass
@@ -178,7 +188,7 @@ class DecisionEngine:
             reasons.append("задали вопрос (+4)")
 
         # Интересная тема
-        if _detect_interesting_topic(ctx.messages):
+        if _detect_interesting_topic(ctx.messages, ctx.character):
             trigger_score += 2
             reasons.append("интересная тема (+2)")
 

@@ -6,13 +6,33 @@ class AccountCreate(BaseModel):
     proxy_url: str | None = None
 
 
+class CharacterRead(BaseModel):
+    id: int
+    name: str
+    gender: str | None
+    age: int | None
+    occupation: str | None
+    personality: str | None
+    likes: str | None
+    dislikes: str | None
+    speech_style: str | None
+    background: str | None
+    location: str | None
+
+    class Config:
+        from_attributes = True
+
+
 class AccountRead(BaseModel):
     id: int
     phone: str
     session_name: str
     proxy_url: str | None
+    proxy_session_id: str | None
     auth_status: str
     is_active: bool
+    character_id: int | None
+    character: CharacterRead | None
 
     class Config:
         from_attributes = True
@@ -74,3 +94,8 @@ class LoginCompleteRequest(BaseModel):
 class LoginPasswordRequest(BaseModel):
     account_id: int
     password: str
+
+
+class CharacterAssignRequest(BaseModel):
+    account_id: int
+    character_id: int

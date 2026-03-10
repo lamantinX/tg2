@@ -17,13 +17,35 @@ class TelegramAccount(Base):
     phone: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     session_name: Mapped[str] = mapped_column(String(128), unique=True)
     proxy_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    proxy_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     auth_status: Mapped[str] = mapped_column(String(32), default="new")
     phone_code_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    character_id: Mapped[int | None] = mapped_column(ForeignKey("characters.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     bindings: Mapped[list["ChatBinding"]] = relationship(back_populates="account")
+    character: Mapped["Character | None"] = relationship(back_populates="accounts")
+
+
+class Character(Base):
+    __tablename__ = "characters"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128))
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)  # male/female
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occupation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    personality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    likes: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated or JSON
+    dislikes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    speech_style: Mapped[str | None] = mapped_column(Text, nullable=True)
+    background: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(128), default="Паттайя")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    accounts: Mapped[list["TelegramAccount"]] = relationship(back_populates="character")
 
 
 class ChatBinding(Base):

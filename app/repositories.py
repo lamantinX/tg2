@@ -4,29 +4,31 @@ import random
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ChatBinding, MessageLog, ReplyTask, TelegramAccount, utcnow
+from sqlalchemy.orm import selectinload
+from app.models import Character, ChatBinding, MessageLog, ReplyTask, TelegramAccount, utcnow
 
 
 class AccountRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, phone: str, session_name: str, proxy_url: str | None) -> TelegramAccount:
-        account = TelegramAccount(phone=phone, session_name=session_name, proxy_url=proxy_url)
+    async def create(self, phone: str, session_name: str, proxy_url: str | None, character_id: int | None = None) -> TelegramAccount:
+        account = TelegramAccount(phone=phone, session_name=session_name, proxy_url=proxy_url, character_id=character_id)
         self.session.add(account)
         await self.session.commit()
         await self.session.refresh(account)
         return account
 
     async def get(self, account_id: int) -> TelegramAccount | None:
-        return await self.session.get(TelegramAccount, account_id)
+        query = select(TelegramAccount).where(TelegramAccount.id == account_id).options(selectinload(TelegramAccount.character))
+        return await self.session.scalar(query)
 
     async def get_by_phone(self, phone: str) -> TelegramAccount | None:
-        query = select(TelegramAccount).where(TelegramAccount.phone == phone)
+        query = select(TelegramAccount).where(TelegramAccount.phone == phone).options(selectinload(TelegramAccount.character))
         return await self.session.scalar(query)
 
     async def list(self) -> list[TelegramAccount]:
-        query = select(TelegramAccount).order_by(TelegramAccount.id.desc())
+        query = select(TelegramAccount).order_by(TelegramAccount.id.desc()).options(selectinload(TelegramAccount.character))
         return list(await self.session.scalars(query))
 
     async def update_login_code_hash(self, account: TelegramAccount, phone_code_hash: str) -> TelegramAccount:
@@ -210,3 +212,27 @@ class ReplyTaskRepository:
         await self.session.commit()
         await self.session.refresh(task)
         return task
+
+
+class CharacterRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> Character:
+        character = Character(**kwargs)
+        self.session.add(character)
+        await self.session.commit()
+        await self.session.refresh(character)
+        return character
+
+    async def get(self, character_id: int) -> Character | None:
+        return await self.session.get(Character, character_id)
+
+    async def list(self) -> list[Character]:
+        query = select(Character).order_by(Character.id.asc())
+        return list(await self.session.scalars(query))
+
+    async def count(self) -> int:
+        from sqlalchemy import func
+        query = select(func.count(Character.id))
+        return await self.session.scalar(query) or 0

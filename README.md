@@ -10,7 +10,7 @@ MVP for a Telegram-controlled service that manages authorized Telegram user sess
 - Assign a session to a target group/chat.
 - Create groups with title, description, and username.
 - Read recent context and generate a disclosed AI message.
-- Configure per-binding system prompt, random send interval range, and context depth.
+- Configure per-binding system prompt, random send interval range, reply-to-latest interval, and context depth.
 - Trigger actions through a Telegram bot and HTTP API.
 
 ## Safety constraints
@@ -64,11 +64,12 @@ Telegram command menu is configured automatically on bot startup. In the chat wi
 9. Use `/chats` to see created bindings.
 10. Use `/binding_settings <binding_id>` to inspect one binding.
 11. Use `/set_binding_interval <binding_id> <min> [max]` for fixed or random intervals.
-12. Use `/set_binding_context <binding_id> <count>` to control how many messages are parsed before generation.
-13. Use `/set_binding_prompt <binding_id> <text>` to set a per-binding system prompt.
-14. Use `/reset_binding_prompt <binding_id>` to clear a custom prompt.
-15. Use `/send_status` to see last and next send time.
-16. Use `/audit_accounts` to validate accounts and clean bindings for inactive sessions.
+12. Use `/set_binding_reply_interval <binding_id> <min> [max]` to make the bot reply to one of the last 10 chat messages on a separate timer, or `off` to disable it.
+13. Use `/set_binding_context <binding_id> <count>` to control how many messages are parsed before generation.
+14. Use `/set_binding_prompt <binding_id> <text>` to set a per-binding system prompt.
+15. Use `/reset_binding_prompt <binding_id>` to clear a custom prompt.
+16. Use `/send_status` to see last and next send time.
+17. Use `/audit_accounts` to validate accounts and clean bindings for inactive sessions.
 
 For the full in-bot guide use `/help`.
 
@@ -96,6 +97,7 @@ Bindings and chats:
 
 Binding settings:
 - `/set_binding_interval <binding_id> <min_minutes> [max_minutes]`
+- `/set_binding_reply_interval <binding_id> <min_minutes> [max_minutes] | off`
 - `/set_binding_context <binding_id> <message_count>`
 - `/set_binding_prompt <binding_id> <text>`
 - `/reset_binding_prompt <binding_id>`

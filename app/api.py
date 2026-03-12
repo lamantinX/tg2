@@ -127,6 +127,8 @@ async def create_binding(payload: BindingCreate, session: AsyncSession = Depends
             account_id=payload.account_id,
             chat_ref=payload.chat_ref,
             interval_minutes=payload.interval_minutes,
+            reply_interval_min_minutes=payload.reply_interval_min_minutes,
+            reply_interval_max_minutes=payload.reply_interval_max_minutes,
             context_message_count=payload.context_message_count,
             system_prompt=payload.system_prompt,
         )
@@ -149,9 +151,12 @@ async def update_binding(binding_id: int, payload: BindingUpdate, session: Async
             binding_id=binding_id,
             interval_min_minutes=payload.interval_min_minutes,
             interval_max_minutes=payload.interval_max_minutes,
+            reply_interval_min_minutes=payload.reply_interval_min_minutes,
+            reply_interval_max_minutes=payload.reply_interval_max_minutes,
             context_message_count=payload.context_message_count,
             system_prompt=payload.system_prompt,
             reset_prompt=payload.reset_prompt,
+            reset_reply_interval=payload.reset_reply_interval,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

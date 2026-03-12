@@ -25,7 +25,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.config import settings
 from app.db import SessionLocal
 from app.scheduler import restart_scheduler
-from app.services import AccountService, BindingService, ChatAutomationService
+from app.services import AccountService, AppSettingsService, BindingService, ChatAutomationService
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,12 @@ class BindChatStates(StatesGroup):
 class BindingSettingsStates(StatesGroup):
     waiting_prompt = State()
     waiting_interval = State()
+    waiting_reply_interval = State()
     waiting_context = State()
+
+
+class MainSettingsStates(StatesGroup):
+    waiting_prompt = State()
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -61,9 +66,19 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Чаты", callback_data="menu:chats")
     builder.button(text="Проверить аккаунты", callback_data="menu:audit")
     builder.button(text="Статус отправки", callback_data="menu:status")
-    builder.button(text="Рестарт раннеров", callback_data="menu:restart_runners")
+    builder.button(text="Перезапустить задачи", callback_data="menu:restart_runners")
+    builder.button(text="Основной промпт", callback_data="menu:main_prompt")
     builder.button(text="Вернуться в начало", callback_data="menu:back")
-    builder.adjust(2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2)
+    return builder.as_markup()
+
+
+def main_prompt_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Изменить основной промпт", callback_data="menu:main_prompt:set")
+    builder.button(text="Сбросить основной промпт", callback_data="menu:main_prompt:reset")
+    builder.button(text="Вернуться в начало", callback_data="menu:back")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -81,9 +96,7 @@ def binding_actions_keyboard(binding_id: int) -> InlineKeyboardMarkup:
 def bindings_list_keyboard(bindings: list) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for b in bindings:
-        chat_name = getattr(b, "chat_ref", "unknown")
-        acc_id = getattr(b, "account_id", "unknown")
-        builder.button(text=f"Чат {chat_name} [Акк: {acc_id}]", callback_data=f"binding:settings:{b.id}")
+        builder.button(text=_binding_button_text(b), callback_data=f"binding:settings:{b.id}")
     builder.button(text="Вернуться в начало", callback_data="menu:back")
     builder.adjust(1)
     return builder.as_markup()
@@ -93,6 +106,7 @@ def binding_settings_keyboard(binding_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Задать промпт", callback_data=f"binding:set_prompt:{binding_id}")
     builder.button(text="Задать интервал", callback_data=f"binding:set_interval:{binding_id}")
+    builder.button(text="Интервал ответов", callback_data=f"binding:set_reply_interval:{binding_id}")
     builder.button(text="Количество сообщений", callback_data=f"binding:set_context:{binding_id}")
     builder.button(text="Удалить привязку", callback_data=f"binding:delete:{binding_id}")
     builder.button(text="Назад к чатам", callback_data="menu:chats")
@@ -110,50 +124,20 @@ def back_keyboard() -> InlineKeyboardMarkup:
 def format_help() -> str:
     return """Справка
 
-1. Быстрый старт
-- Нажми «Мастер» или отправь /wizard.
-- Введи номер телефона в формате +15550000001.
-- Введи proxy URL или отправь skip.
-- Введи код входа из Telegram.
-- Если включена 2FA, введи пароль.
-- Введи chat_ref или отправь skip.
-- Введи интервал в минутах или отправь skip.
+- /wizard - пошаговое добавление аккаунта и привязки.
+- /accounts - список аккаунтов.
+- /chats - список привязок.
+- /send_status - статус отправок и автоответов.
+- /set_binding_interval <binding_id> <min> [max] - интервал отправки.
+- /set_binding_reply_interval <binding_id> <min> [max] | off - интервал автоответов.
+- /set_binding_context <binding_id> <count> - глубина контекста.
+- /set_binding_prompt <binding_id> <text> - промпт для чата.
+- /reset_binding_prompt <binding_id> - сброс промпта.
+- /create_group <account_id> <описание> - создать группу.
 
-2. Аккаунты
-- /accounts - список аккаунтов и их статусов.
-- /add_account <phone> [proxy_url] - добавить аккаунт вручную.
-- /login_code <account_id> - запросить код входа.
-- /login_finish <account_id> <code> [password] - завершить вход по коду.
-- /login_password <account_id> <password> - завершить вход с 2FA.
-- /audit_accounts - проверить аккаунты и очистить привязки у неактивных сессий.
-- /character_info <account_id> - посмотреть профиль персонажа аккаунта.
-
-3. Привязки и чаты
-- /chats - список всех привязок.
-- /bind_chat <account_id> <chat_ref> [interval_minutes] - создать привязку.
-- /delete_binding <binding_id> - удалить привязку.
-- /binding_settings <binding_id> - показать настройки привязки.
-
-4. Настройки привязки
-- /set_binding_interval <binding_id> <min_minutes> [max_minutes] - задать фиксированный или случайный интервал.
-- /set_binding_context <binding_id> <message_count> - сколько сообщений читать перед генерацией.
-- /set_binding_prompt <binding_id> <text> - задать системный промпт для привязки.
-- /reset_binding_prompt <binding_id> - сбросить пользовательский промпт.
-
-5. Отправка и группы
-- /send_status - последняя отправка, следующая отправка и текущее состояние.
-- /generate_once <account_id> <chat_ref> - сгенерировать и отправить одно сообщение сейчас.
-- /create_group <account_id> <описание группы> - создать группу с ИИ-генерацией названия и 10 сообщений.
-
-6. Навигация
-- /start - открыть главное меню.
-- /help - открыть эту справку.
-- /cancel - сбросить текущий мастер.
-
-Примечания
-- Для случайного интервала укажи минимум и максимум, например /set_binding_interval 5 7 15.
-- Для фиксированного интервала укажи одно число, например /set_binding_interval 5 10.
-- Все AI-сообщения отправляются с явной пометкой."""
+Основной промпт меняется через кнопку «Основной промпт».
+Для случайного интервала можно указать два числа, например `5 15`.
+Для отключения автоответов используй `off`."""
 
 
 def format_audit_report(report: dict[str, object]) -> str:
@@ -193,6 +177,62 @@ def _prompt_preview(value: str | None, limit: int = 140) -> str:
     return compact[:limit] + "..."
 
 
+def format_main_prompt_settings(prompt: str, is_custom: bool) -> str:
+    source = "пользовательский" if is_custom else "по умолчанию"
+    return (
+        f"Основной системный промпт ({source}):\n"
+        f"{_prompt_preview(prompt, limit=1200)}"
+    )
+
+
+def _format_interval_range(interval_min: int | None, interval_max: int | None) -> str:
+    if interval_min is None or interval_max is None:
+        return "off"
+    return f"{interval_min}-{interval_max}m"
+
+
+def _truncate_label(value: str, limit: int = 60) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit - 3]}..."
+
+
+def _binding_account_name(binding: object) -> str:
+    account_name = getattr(binding, "account_name", None)
+    if account_name:
+        return str(account_name)
+    account = getattr(binding, "account", None)
+    if account is not None:
+        if getattr(account, "account_name", None):
+            return str(account.account_name)
+        if getattr(account, "phone", None):
+            return str(account.phone)
+        if getattr(account, "session_name", None):
+            return str(account.session_name)
+    return str(getattr(binding, "account_id", "?"))
+
+
+def _binding_chat_name(binding: object) -> str:
+    return str(getattr(binding, "chat_title", None) or getattr(binding, "chat_ref", "unknown"))
+
+
+def _binding_button_text(binding: object) -> str:
+    text = f"{binding.id} | {binding.account_id} | {_binding_account_name(binding)} | {_binding_chat_name(binding)}"
+    return _truncate_label(text)
+
+
+def _parse_reply_interval_input(text: str) -> tuple[int | None, int | None, bool]:
+    value = text.strip().lower()
+    if value in {"off", "disable", "disabled"}:
+        return None, None, True
+    parts = value.split()
+    if not parts or len(parts) > 2 or not all(part.isdigit() for part in parts):
+        raise ValueError("bad_format")
+    interval_min = int(parts[0])
+    interval_max = int(parts[1]) if len(parts) > 1 else interval_min
+    return interval_min, interval_max, False
+
+
 def format_send_status(items: list[dict[str, object]]) -> str:
     if not items:
         return "No bindings."
@@ -201,42 +241,54 @@ def format_send_status(items: list[dict[str, object]]) -> str:
         lines.append(
             f"binding={item['binding_id']} | acc={item['account_id']} | state={item['state']} | "
             f"chat={item['chat_ref']} | next={_short_time(item['next_run_at'])} | "
-            f"range={item.get('interval_min_minutes', item.get('interval_minutes', '-'))}-{item.get('interval_max_minutes', item.get('interval_minutes', '-'))}m | "
+            f"range={_format_interval_range(item.get('interval_min_minutes'), item.get('interval_max_minutes'))} | "
+            f"reply={_format_interval_range(item.get('reply_interval_min_minutes'), item.get('reply_interval_max_minutes'))} "
+            f"({item.get('reply_state', 'disabled')}) | reply_next={_short_time(item.get('next_reply_run_at'))} | "
             f"ctx={item.get('context_message_count', '-')}"
         )
     return "\n".join(lines)
 
 
 def format_binding(binding: object) -> str:
-    interval_min = getattr(binding, "interval_min_minutes", getattr(binding, "interval_minutes", "-"))
-    interval_max = getattr(binding, "interval_max_minutes", getattr(binding, "interval_minutes", "-"))
+    interval_min = getattr(binding, "interval_min_minutes", getattr(binding, "interval_minutes", None))
+    interval_max = getattr(binding, "interval_max_minutes", getattr(binding, "interval_minutes", None))
+    reply_interval_min = getattr(binding, "reply_interval_min_minutes", None)
+    reply_interval_max = getattr(binding, "reply_interval_max_minutes", None)
     context_count = getattr(binding, "context_message_count", "-")
     prompt = getattr(binding, "system_prompt", None)
     is_enabled = getattr(binding, "is_enabled", True)
     return (
-        f"{binding.id}: account={binding.account_id} chat={binding.chat_ref}\n"
-        f"interval={interval_min}-{interval_max}m | context={context_count} | enabled={int(bool(is_enabled))}\n"
+        f"{binding.id}: account_id={binding.account_id} account_name={_binding_account_name(binding)} chat={_binding_chat_name(binding)} ({binding.chat_ref})\n"
+        f"interval={_format_interval_range(interval_min, interval_max)} | reply_interval={_format_interval_range(reply_interval_min, reply_interval_max)} | context={context_count} | enabled={int(bool(is_enabled))}\n"
         f"prompt={_prompt_preview(prompt)}"
     )
 
 
 def format_binding_settings(binding: object) -> str:
-    interval_min = getattr(binding, "interval_min_minutes", getattr(binding, "interval_minutes", "-"))
-    interval_max = getattr(binding, "interval_max_minutes", getattr(binding, "interval_minutes", "-"))
+    interval_min = getattr(binding, "interval_min_minutes", getattr(binding, "interval_minutes", None))
+    interval_max = getattr(binding, "interval_max_minutes", getattr(binding, "interval_minutes", None))
+    reply_interval_min = getattr(binding, "reply_interval_min_minutes", None)
+    reply_interval_max = getattr(binding, "reply_interval_max_minutes", None)
     context_count = getattr(binding, "context_message_count", "-")
     system_prompt = getattr(binding, "system_prompt", None) or "-"
     last_posted_at = getattr(binding, "last_posted_at", None) or "-"
     next_run_at = getattr(binding, "next_run_at", None) or "-"
+    last_reply_posted_at = getattr(binding, "last_reply_posted_at", None) or "-"
+    next_reply_run_at = getattr(binding, "next_reply_run_at", None) or "-"
     return (
         f"Binding settings {binding.id}:\n"
+        f"account_name={_binding_account_name(binding)}\n"
         f"account_id={binding.account_id}\n"
+        f"chat_title={_binding_chat_name(binding)}\n"
         f"chat_ref={binding.chat_ref}\n"
-        f"interval_min={interval_min}\n"
-        f"interval_max={interval_max}\n"
+        f"interval={_format_interval_range(interval_min, interval_max)}\n"
+        f"reply_interval={_format_interval_range(reply_interval_min, reply_interval_max)}\n"
         f"context_message_count={context_count}\n"
         f"system_prompt={system_prompt}\n"
         f"last_posted_at={last_posted_at}\n"
-        f"next_run_at={next_run_at}"
+        f"next_run_at={next_run_at}\n"
+        f"last_reply_posted_at={last_reply_posted_at}\n"
+        f"next_reply_run_at={next_reply_run_at}"
     )
 
 
@@ -250,18 +302,19 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                 BotCommand(command="start", description="Главное меню"),
                 BotCommand(command="help", description="Подробная справка"),
                 BotCommand(command="wizard", description="Пошаговая настройка"),
-                BotCommand(command="cancel", description="Сбросить мастер"),
+                BotCommand(command="cancel", description="Сбросить сценарий"),
                 BotCommand(command="accounts", description="Список аккаунтов"),
                 BotCommand(command="audit_accounts", description="Проверить аккаунты"),
                 BotCommand(command="character_info", description="Инфо о персонаже"),
                 BotCommand(command="chats", description="Список привязок"),
                 BotCommand(command="binding_settings", description="Настройки привязки"),
                 BotCommand(command="set_binding_interval", description="Интервал привязки"),
+                BotCommand(command="set_binding_reply_interval", description="Интервал ответов"),
                 BotCommand(command="set_binding_context", description="Глубина контекста"),
                 BotCommand(command="set_binding_prompt", description="Промпт привязки"),
                 BotCommand(command="reset_binding_prompt", description="Сбросить промпт"),
                 BotCommand(command="send_status", description="Статус отправки"),
-                BotCommand(command="restart_runners", description="Перезапустить планировщик"),
+                BotCommand(command="restart_runners", description="Перезапустить задачи"),
                 BotCommand(command="delete_binding", description="Удалить привязку"),
             ]
         )
@@ -361,6 +414,40 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                 await message.answer(format_binding_settings(binding), reply_markup=binding_actions_keyboard(binding.id))
             except ValueError as exc:
                 await message.answer(f"Error: {exc}", reply_markup=back_keyboard())
+
+    @dp.message(Command("set_binding_reply_interval"))
+    async def set_binding_reply_interval_handler(message: Message) -> None:
+        parts = (message.text or "").split()
+        if len(parts) not in {3, 4} or not parts[1].isdigit():
+            await message.answer(
+                "Формат: /set_binding_reply_interval <binding_id> <min_minutes> [max_minutes] | off",
+                reply_markup=back_keyboard(),
+                parse_mode=None,
+            )
+            return
+
+        reply_text = " ".join(parts[2:])
+        try:
+            interval_min, interval_max, reset_reply_interval = _parse_reply_interval_input(reply_text)
+        except ValueError:
+            await message.answer(
+                "Формат: /set_binding_reply_interval <binding_id> <min_minutes> [max_minutes] | off",
+                reply_markup=back_keyboard(),
+                parse_mode=None,
+            )
+            return
+
+        async with SessionLocal() as session:
+            try:
+                binding = await BindingService(session).update_binding_settings(
+                    binding_id=int(parts[1]),
+                    reply_interval_min_minutes=interval_min,
+                    reply_interval_max_minutes=interval_max,
+                    reset_reply_interval=reset_reply_interval,
+                )
+                await message.answer(format_binding_settings(binding), reply_markup=binding_actions_keyboard(binding.id))
+            except ValueError as exc:
+                await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard())
 
     @dp.message(Command("set_binding_context"))
     async def set_binding_context_handler(message: Message) -> None:
@@ -653,6 +740,45 @@ def build_bot() -> tuple[Bot, Dispatcher]:
             await callback.message.answer(f"Ошибка при рестарте: {exc}", reply_markup=back_keyboard())
             await callback.answer()
 
+    @dp.callback_query(F.data == "menu:main_prompt")
+    async def callback_main_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            custom_prompt = await service.get_main_system_prompt()
+            effective_prompt = await service.get_effective_main_system_prompt()
+            await callback.message.answer(
+                format_main_prompt_settings(effective_prompt, is_custom=custom_prompt is not None),
+                reply_markup=main_prompt_keyboard(),
+                parse_mode=None,
+            )
+        await callback.answer()
+
+    @dp.callback_query(F.data == "menu:main_prompt:set")
+    async def callback_main_prompt_set(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        await state.set_state(MainSettingsStates.waiting_prompt)
+        await callback.message.answer(
+            "Введи новый основной системный промпт. Он будет применяться ко всем чатам.",
+            reply_markup=back_keyboard(),
+            parse_mode=None,
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data == "menu:main_prompt:reset")
+    async def callback_main_prompt_reset(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            await service.reset_main_system_prompt()
+            effective_prompt = await service.get_effective_main_system_prompt()
+            await callback.message.answer(
+                format_main_prompt_settings(effective_prompt, is_custom=False),
+                reply_markup=main_prompt_keyboard(),
+                parse_mode=None,
+            )
+        await callback.answer()
+
     @dp.callback_query(F.data == "menu:back")
     async def callback_back(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
@@ -780,6 +906,23 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                 await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard())
         await state.clear()
 
+    @dp.message(MainSettingsStates.waiting_prompt)
+    async def process_waiting_main_prompt(message: Message, state: FSMContext) -> None:
+        prompt = (message.text or "").strip()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            try:
+                saved_prompt = await service.set_main_system_prompt(prompt)
+                await message.answer(
+                    format_main_prompt_settings(saved_prompt, is_custom=True),
+                    reply_markup=main_prompt_keyboard(),
+                    parse_mode=None,
+                )
+            except ValueError as exc:
+                await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard(), parse_mode=None)
+                return
+        await state.clear()
+
     @dp.callback_query(F.data.startswith("binding:set_interval:"))
     async def callback_binding_set_interval(callback: CallbackQuery, state: FSMContext) -> None:
         binding_id = int((callback.data or "").split(":")[-1])
@@ -806,6 +949,45 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                     binding_id=binding_id,
                     interval_min_minutes=interval_min,
                     interval_max_minutes=interval_max,
+                )
+                await message.answer(format_binding_settings(binding), reply_markup=binding_settings_keyboard(binding_id))
+            except ValueError as exc:
+                await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard())
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("binding:set_reply_interval:"))
+    async def callback_binding_set_reply_interval(callback: CallbackQuery, state: FSMContext) -> None:
+        binding_id = int((callback.data or "").split(":")[-1])
+        await state.update_data(binding_id=binding_id)
+        await state.set_state(BindingSettingsStates.waiting_reply_interval)
+        await callback.message.answer(
+            f"Введи интервал ответов для привязки {binding_id} (`15`, `15 30` или `off`):",
+            reply_markup=back_keyboard(),
+            parse_mode=None,
+        )
+        await callback.answer()
+
+    @dp.message(BindingSettingsStates.waiting_reply_interval)
+    async def process_waiting_reply_interval(message: Message, state: FSMContext) -> None:
+        data = await state.get_data()
+        binding_id = data.get("binding_id")
+        try:
+            interval_min, interval_max, reset_reply_interval = _parse_reply_interval_input((message.text or "").strip())
+        except ValueError:
+            await message.answer(
+                "Ошибка формата. Введи `15`, `15 30` или `off`.",
+                reply_markup=back_keyboard(),
+                parse_mode=None,
+            )
+            return
+
+        async with SessionLocal() as session:
+            try:
+                binding = await BindingService(session).update_binding_settings(
+                    binding_id=binding_id,
+                    reply_interval_min_minutes=interval_min,
+                    reply_interval_max_minutes=interval_max,
+                    reset_reply_interval=reset_reply_interval,
                 )
                 await message.answer(format_binding_settings(binding), reply_markup=binding_settings_keyboard(binding_id))
             except ValueError as exc:

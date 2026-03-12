@@ -1,4 +1,4 @@
-﻿from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -17,7 +17,18 @@ class Settings(BaseSettings):
     ai_log_path: str = "data/logs/ai.log"
     decodo_api_key: str = ""
     decodo_api_url: str = "https://api.decodo.com/v1"
+    decodo_proxy_username: str = ""
+    decodo_proxy_password: str = ""
+    decodo_proxy_scheme: str = "socks5h"
+    decodo_proxy_host: str = "gate.decodo.com"
+    decodo_proxy_port: int = 7000
+    decodo_proxy_country: str = ""
+    decodo_proxy_session_duration: int = 30
     accounts_per_proxy: int = 3
+
+    @property
+    def decodo_enabled(self) -> bool:
+        return bool(self.decodo_proxy_username and self.decodo_proxy_password)
 
 
 settings = Settings()

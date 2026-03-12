@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+﻿from pydantic import BaseModel, Field
 
 
 class AccountCreate(BaseModel):
@@ -30,6 +30,7 @@ class AccountRead(BaseModel):
     proxy_url: str | None
     proxy_session_id: str | None
     auth_status: str
+    account_name: str | None
     is_active: bool
     character_id: int | None
     character: CharacterRead | None
@@ -42,6 +43,8 @@ class BindingCreate(BaseModel):
     account_id: int
     chat_ref: str
     interval_minutes: int = Field(default=10, ge=1, le=1440)
+    reply_interval_min_minutes: int | None = Field(default=None, ge=1, le=1440)
+    reply_interval_max_minutes: int | None = Field(default=None, ge=1, le=1440)
     context_message_count: int = Field(default=12, ge=1, le=200)
     system_prompt: str | None = None
 
@@ -49,18 +52,26 @@ class BindingCreate(BaseModel):
 class BindingUpdate(BaseModel):
     interval_min_minutes: int | None = Field(default=None, ge=1, le=1440)
     interval_max_minutes: int | None = Field(default=None, ge=1, le=1440)
+    reply_interval_min_minutes: int | None = Field(default=None, ge=1, le=1440)
+    reply_interval_max_minutes: int | None = Field(default=None, ge=1, le=1440)
     context_message_count: int | None = Field(default=None, ge=1, le=200)
     system_prompt: str | None = None
     reset_prompt: bool = False
+    reset_reply_interval: bool = False
 
 
 class BindingRead(BaseModel):
     id: int
     account_id: int
+    account_name: str | None = None
     chat_ref: str
+    chat_title: str | None = None
+    bot_name: str | None = None
     interval_minutes: int
     interval_min_minutes: int
     interval_max_minutes: int
+    reply_interval_min_minutes: int | None
+    reply_interval_max_minutes: int | None
     context_message_count: int
     system_prompt: str | None
     is_enabled: bool

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai import AIService
+from app.ai import AIService, DEFAULT_MAIN_SYSTEM_PROMPT
 from app.decision_engine import DecisionContext, decision_engine
-from app.repositories import AccountRepository, BindingRepository, CharacterRepository, MessageLogRepository, ReplyTaskRepository
+from app.repositories import AccountRepository, AppSettingsRepository, BindingRepository, CharacterRepository, MessageLogRepository, ReplyTaskRepository
 from app.telegram_client import TelegramAccountClient
 from app.character_engine import DEFAULT_CHARACTERS
 
@@ -56,17 +56,30 @@ class AccountService:
     async def get_account(self, account_id: int) -> object | None:
         return await self.repo.get(account_id)
 
+    async def _sync_account_name(self, account: object, tg: TelegramAccountClient) -> object:
+        try:
+            account_name = await tg.get_account_name()
+        except Exception as exc:
+            logging.getLogger("tg2.services").warning(
+                "Failed to resolve account name for account_id=%s: %s",
+                account.id,
+                exc,
+            )
+            return account
+        if not account_name or account_name == getattr(account, "account_name", None):
+            return account
+        return await self.repo.update_profile(account, account_name=account_name)
+
     async def request_login_code(self, account_id: int) -> str:
         account = await self.repo.get(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
 
-        # Получаем/обновляем прокси через менеджер
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
-        
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             if await tg.is_authorized():
+                await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
                 return "already_authorized"
             phone_code_hash = await tg.request_login_code(account.phone)
@@ -82,9 +95,7 @@ class AccountService:
         if not account.phone_code_hash and account.auth_status != "authorized":
             raise ValueError("Login code was not requested for this account")
 
-        # Прокси уже должен быть назначен при запросе кода, но на всякий случай проверяем
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
-
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             status = await tg.complete_login(
@@ -94,6 +105,7 @@ class AccountService:
                 password=password,
             )
             if status == "authorized":
+                await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
             return status
         finally:
@@ -106,13 +118,12 @@ class AccountService:
         if account.auth_status not in {"code_requested", "authorized"} and not account.phone_code_hash:
             raise ValueError("Login code was not requested for this account")
 
-        # Получаем/обновляем прокси через менеджер
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
-
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             status = await tg.complete_password_login(password=password)
             if status == "authorized":
+                await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
             return status
         finally:
@@ -129,7 +140,7 @@ class AccountService:
         }
         for account in accounts:
             report["audited"] += 1
-            # Получаем/обновляем прокси через менеджер
+            # Р В Р’В Р РЋРЎСџР В Р’В Р РЋРІР‚СћР В Р’В Р вЂ™Р’В»Р В Р Р‹Р РЋРІР‚СљР В Р Р‹Р Р†Р вЂљР Р‹Р В Р’В Р вЂ™Р’В°Р В Р’В Р вЂ™Р’ВµР В Р’В Р РЋР’В/Р В Р’В Р РЋРІР‚СћР В Р’В Р вЂ™Р’В±Р В Р’В Р В РІР‚В¦Р В Р’В Р РЋРІР‚СћР В Р’В Р В РІР‚В Р В Р’В Р вЂ™Р’В»Р В Р Р‹Р В Р РЏР В Р’В Р вЂ™Р’ВµР В Р’В Р РЋР’В Р В Р’В Р РЋРІР‚вЂќР В Р Р‹Р В РІР‚С™Р В Р’В Р РЋРІР‚СћР В Р’В Р РЋРІР‚СњР В Р Р‹Р В РЎвЂњР В Р’В Р РЋРІР‚В Р В Р Р‹Р Р†Р вЂљР Р‹Р В Р’В Р вЂ™Р’ВµР В Р Р‹Р В РІР‚С™Р В Р’В Р вЂ™Р’ВµР В Р’В Р вЂ™Р’В· Р В Р’В Р РЋР’ВР В Р’В Р вЂ™Р’ВµР В Р’В Р В РІР‚В¦Р В Р’В Р вЂ™Р’ВµР В Р’В Р СћРІР‚ВР В Р’В Р вЂ™Р’В¶Р В Р’В Р вЂ™Р’ВµР В Р Р‹Р В РІР‚С™
             proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
 
             tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
@@ -167,6 +178,7 @@ class AccountService:
 
 class BindingService:
     def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.repo = BindingRepository(session)
         self.account_repo = AccountRepository(session)
 
@@ -177,26 +189,150 @@ class BindingService:
             return value.replace(tzinfo=timezone.utc)
         return value
 
+    def _validate_interval_range(
+        self,
+        label: str,
+        min_minutes: int | None,
+        max_minutes: int | None,
+        *,
+        allow_disabled: bool = False,
+    ) -> None:
+        if min_minutes is None and max_minutes is None and allow_disabled:
+            return
+        if min_minutes is None or max_minutes is None:
+            raise ValueError(f"{label} interval requires both min and max values")
+        if min_minutes < 1:
+            raise ValueError(f"{label}_min_minutes must be >= 1")
+        if max_minutes < 1:
+            raise ValueError(f"{label}_max_minutes must be >= 1")
+        if min_minutes > max_minutes:
+            raise ValueError(f"{label}_min_minutes cannot be greater than {label}_max_minutes")
+
     def _validate_settings(
         self,
         interval_min_minutes: int | None,
         interval_max_minutes: int | None,
         context_message_count: int | None,
+        reply_interval_min_minutes: int | None = None,
+        reply_interval_max_minutes: int | None = None,
     ) -> None:
-        if interval_min_minutes is not None and interval_min_minutes < 1:
-            raise ValueError("interval_min_minutes must be >= 1")
-        if interval_max_minutes is not None and interval_max_minutes < 1:
-            raise ValueError("interval_max_minutes must be >= 1")
-        if interval_min_minutes is not None and interval_max_minutes is not None and interval_min_minutes > interval_max_minutes:
-            raise ValueError("interval_min_minutes cannot be greater than interval_max_minutes")
+        self._validate_interval_range("interval", interval_min_minutes, interval_max_minutes)
+        self._validate_interval_range(
+            "reply_interval",
+            reply_interval_min_minutes,
+            reply_interval_max_minutes,
+            allow_disabled=True,
+        )
         if context_message_count is not None and not 1 <= context_message_count <= 200:
             raise ValueError("context_message_count must be between 1 and 200")
+
+    def _resolve_reply_interval(
+        self,
+        binding: object,
+        reply_interval_min_minutes: int | None,
+        reply_interval_max_minutes: int | None,
+        reset_reply_interval: bool,
+    ) -> tuple[int | None, int | None]:
+        if reset_reply_interval:
+            return None, None
+        current_min = getattr(binding, "reply_interval_min_minutes", None)
+        current_max = getattr(binding, "reply_interval_max_minutes", None)
+        if reply_interval_min_minutes is None and reply_interval_max_minutes is None:
+            return current_min, current_max
+
+        resolved_min = reply_interval_min_minutes
+        if resolved_min is None:
+            resolved_min = current_min if current_min is not None else reply_interval_max_minutes
+
+        resolved_max = reply_interval_max_minutes
+        if resolved_max is None:
+            resolved_max = current_max if current_max is not None else reply_interval_min_minutes
+
+        return resolved_min, resolved_max
+
+    def _resolve_next_run(
+        self,
+        last_posted_at: datetime | None,
+        next_run_at: datetime | None,
+        max_minutes: int | None,
+        now: datetime,
+    ) -> datetime | None:
+        if max_minutes is None:
+            return next_run_at
+        if next_run_at is not None:
+            return next_run_at
+        if last_posted_at is None:
+            return now
+        return last_posted_at + timedelta(minutes=max_minutes)
+
+    def _resolve_state(self, enabled: bool, account_ok: bool, next_run_at: datetime | None, now: datetime) -> str:
+        if not enabled:
+            return "disabled"
+        if not account_ok:
+            return "blocked"
+        if next_run_at is None or next_run_at <= now:
+            return "due"
+        return "waiting"
+
+    async def _fetch_account_name(self, account: object) -> str | None:
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            return await tg.get_account_name()
+        except Exception as exc:
+            logging.getLogger("tg2.services").warning(
+                "Failed to resolve account name for account_id=%s: %s",
+                account.id,
+                exc,
+            )
+            return None
+        finally:
+            await tg.disconnect()
+
+    async def _fetch_chat_title(self, account: object, chat_ref: str) -> str | None:
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            return await tg.get_chat_title(chat_ref)
+        except Exception as exc:
+            logging.getLogger("tg2.services").warning(
+                "Failed to resolve chat title for account_id=%s chat_ref=%s: %s",
+                account.id,
+                chat_ref,
+                exc,
+            )
+            return None
+        finally:
+            await tg.disconnect()
+
+    async def _hydrate_binding_metadata(self, binding: object) -> object:
+        account = getattr(binding, "account", None) or await self.account_repo.get(binding.account_id)
+        if account is None:
+            return binding
+
+        if not getattr(account, "account_name", None) and account.is_active and account.auth_status == "authorized":
+            account_name = await self._fetch_account_name(account)
+            if account_name:
+                account = await self.account_repo.update_profile(account, account_name=account_name)
+                binding.account = account
+
+        if getattr(binding, "chat_title", None) or not account.is_active or account.auth_status != "authorized":
+            return binding
+
+        chat_title = await self._fetch_chat_title(account, binding.chat_ref)
+        if not chat_title:
+            return binding
+
+        refreshed = await self.repo.set_chat_title(binding, chat_title)
+        return refreshed or binding
 
     async def create_binding(
         self,
         account_id: int,
         chat_ref: str,
         interval_minutes: int,
+        reply_interval_min_minutes: int | None = None,
+        reply_interval_max_minutes: int | None = None,
         context_message_count: int = 12,
         system_prompt: str | None = None,
     ) -> object:
@@ -205,13 +341,18 @@ class BindingService:
             raise ValueError(f"Account {account_id} not found")
         if not account.is_active or account.auth_status != "authorized":
             raise ValueError(f"Account {account_id} is not active and authorized")
-        self._validate_settings(interval_minutes, interval_minutes, context_message_count)
+        self._validate_settings(
+            interval_minutes,
+            interval_minutes,
+            context_message_count,
+            reply_interval_min_minutes,
+            reply_interval_max_minutes,
+        )
 
-        # Получаем/обновляем прокси через менеджер
-        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.repo.session)
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
 
-        # Проверяем участие аккаунта в чате и вступаем, если он не состоит в нём
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        chat_title = None
         try:
             is_member = await tg.check_chat_membership(chat_ref)
             if not is_member:
@@ -222,52 +363,80 @@ class BindingService:
                 logging.getLogger("tg2.services").info(
                     "account %s successfully joined %s", account_id, chat_ref
                 )
+            try:
+                chat_title = await tg.get_chat_title(chat_ref)
+            except Exception as exc:
+                logging.getLogger("tg2.services").warning(
+                    "Failed to resolve chat title during binding creation account_id=%s chat_ref=%s: %s",
+                    account_id,
+                    chat_ref,
+                    exc,
+                )
         except Exception as exc:
-            raise ValueError(f"Не удалось вступить в чат {chat_ref!r}: {exc}") from exc
+            raise ValueError(f"Р В РЎСљР В Р’Вµ Р РЋРЎвЂњР В РўвЂР В Р’В°Р В Р’В»Р В РЎвЂўР РЋР С“Р РЋР Р‰ Р В Р вЂ Р РЋР С“Р РЋРІР‚С™Р РЋРЎвЂњР В РЎвЂ”Р В РЎвЂР РЋРІР‚С™Р РЋР Р‰ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™ {chat_ref!r}: {exc}") from exc
         finally:
             await tg.disconnect()
 
         return await self.repo.create(
             account_id=account_id,
             chat_ref=chat_ref,
+            chat_title=chat_title,
             interval_minutes=interval_minutes,
             interval_min_minutes=interval_minutes,
             interval_max_minutes=interval_minutes,
+            reply_interval_min_minutes=reply_interval_min_minutes,
+            reply_interval_max_minutes=reply_interval_max_minutes,
             context_message_count=context_message_count,
             system_prompt=system_prompt.strip() if system_prompt else None,
         )
 
     async def list_bindings(self) -> list[object]:
-        return await self.repo.list()
+        bindings = await self.repo.list()
+        hydrated: list[object] = []
+        for binding in bindings:
+            hydrated.append(await self._hydrate_binding_metadata(binding))
+        return hydrated
 
     async def get_binding(self, binding_id: int) -> object:
         binding = await self.repo.get(binding_id)
         if binding is None:
             raise ValueError(f"Binding {binding_id} not found")
-        return binding
+        return await self._hydrate_binding_metadata(binding)
 
     async def update_binding_settings(
         self,
         binding_id: int,
         interval_min_minutes: int | None = None,
         interval_max_minutes: int | None = None,
+        reply_interval_min_minutes: int | None = None,
+        reply_interval_max_minutes: int | None = None,
         context_message_count: int | None = None,
         system_prompt: str | None = None,
         reset_prompt: bool = False,
+        reset_reply_interval: bool = False,
     ) -> object:
         binding = await self.get_binding(binding_id)
         new_min = interval_min_minutes if interval_min_minutes is not None else binding.interval_min_minutes
         new_max = interval_max_minutes if interval_max_minutes is not None else binding.interval_max_minutes
         new_context = context_message_count if context_message_count is not None else binding.context_message_count
-        self._validate_settings(new_min, new_max, new_context)
+        new_reply_min, new_reply_max = self._resolve_reply_interval(
+            binding,
+            reply_interval_min_minutes,
+            reply_interval_max_minutes,
+            reset_reply_interval,
+        )
+        self._validate_settings(new_min, new_max, new_context, new_reply_min, new_reply_max)
         cleaned_prompt = system_prompt.strip() if system_prompt else system_prompt
         return await self.repo.update_settings(
             binding,
             interval_min_minutes=interval_min_minutes,
             interval_max_minutes=interval_max_minutes,
+            reply_interval_min_minutes=new_reply_min if (reply_interval_min_minutes is not None or reply_interval_max_minutes is not None) else None,
+            reply_interval_max_minutes=new_reply_max if (reply_interval_min_minutes is not None or reply_interval_max_minutes is not None) else None,
             context_message_count=context_message_count,
             system_prompt=cleaned_prompt,
             reset_prompt=reset_prompt,
+            reset_reply_interval=reset_reply_interval,
         )
 
     async def delete_binding(self, binding_id: int) -> None:
@@ -284,22 +453,19 @@ class BindingService:
         items: list[dict[str, object]] = []
         for binding in bindings:
             account = await self.account_repo.get(binding.account_id)
-            last_posted_at = self._normalize_dt(binding.last_posted_at)
-            next_run_at = self._normalize_dt(binding.next_run_at)
-            if next_run_at is None and binding.is_enabled:
-                if last_posted_at is None:
-                    next_run_at = now
-                else:
-                    next_run_at = last_posted_at + timedelta(minutes=binding.interval_max_minutes)
+            account_ok = bool(account and account.is_active and account.auth_status == "authorized")
 
-            if not binding.is_enabled:
-                state = "disabled"
-            elif account is None or not account.is_active or account.auth_status != "authorized":
-                state = "blocked"
-            elif next_run_at is None or next_run_at <= now:
-                state = "due"
-            else:
-                state = "waiting"
+            last_posted_at = self._normalize_dt(binding.last_posted_at)
+            next_run_at = self._resolve_next_run(last_posted_at, self._normalize_dt(binding.next_run_at), binding.interval_max_minutes, now)
+
+            last_reply_posted_at = self._normalize_dt(getattr(binding, "last_reply_posted_at", None))
+            reply_next_run_at = self._resolve_next_run(
+                last_reply_posted_at,
+                self._normalize_dt(getattr(binding, "next_reply_run_at", None)),
+                getattr(binding, "reply_interval_max_minutes", None),
+                now,
+            )
+            reply_enabled = getattr(binding, "reply_interval_min_minutes", None) is not None and getattr(binding, "reply_interval_max_minutes", None) is not None
 
             items.append(
                 {
@@ -310,6 +476,8 @@ class BindingService:
                     "interval_minutes": binding.interval_minutes,
                     "interval_min_minutes": binding.interval_min_minutes,
                     "interval_max_minutes": binding.interval_max_minutes,
+                    "reply_interval_min_minutes": getattr(binding, "reply_interval_min_minutes", None),
+                    "reply_interval_max_minutes": getattr(binding, "reply_interval_max_minutes", None),
                     "context_message_count": binding.context_message_count,
                     "system_prompt": binding.system_prompt,
                     "is_enabled": binding.is_enabled,
@@ -317,7 +485,11 @@ class BindingService:
                     "account_auth_status": getattr(account, "auth_status", "missing"),
                     "last_posted_at": last_posted_at.isoformat() if last_posted_at else None,
                     "next_run_at": next_run_at.isoformat() if next_run_at else None,
-                    "state": state,
+                    "last_reply_posted_at": last_reply_posted_at.isoformat() if last_reply_posted_at else None,
+                    "next_reply_run_at": reply_next_run_at.isoformat() if reply_next_run_at else None,
+                    "reply_enabled": reply_enabled,
+                    "reply_state": self._resolve_state(reply_enabled, account_ok, reply_next_run_at, now),
+                    "state": self._resolve_state(binding.is_enabled, account_ok, next_run_at, now),
                 }
             )
         return items
@@ -330,29 +502,110 @@ class BindingService:
             account = await self.account_repo.get(binding.account_id)
             if account is None or not account.is_active or account.auth_status != "authorized":
                 continue
-            next_run_at = self._normalize_dt(binding.next_run_at)
-            last_posted_at = self._normalize_dt(binding.last_posted_at)
-            if next_run_at is None:
-                if last_posted_at is None:
-                    due.append(binding)
-                    continue
-                next_run_at = last_posted_at + timedelta(minutes=binding.interval_max_minutes)
-            if next_run_at <= now:
+            next_run_at = self._resolve_next_run(
+                self._normalize_dt(binding.last_posted_at),
+                self._normalize_dt(binding.next_run_at),
+                binding.interval_max_minutes,
+                now,
+            )
+            if next_run_at is None or next_run_at <= now:
+                due.append(binding)
+        return due
+
+    async def due_reply_bindings(self) -> list[object]:
+        bindings = await self.repo.list_enabled()
+        now = datetime.now(timezone.utc)
+        due = []
+        for binding in bindings:
+            account = await self.account_repo.get(binding.account_id)
+            if account is None or not account.is_active or account.auth_status != "authorized":
+                continue
+            if getattr(binding, "reply_interval_min_minutes", None) is None or getattr(binding, "reply_interval_max_minutes", None) is None:
+                continue
+            next_reply_run_at = self._resolve_next_run(
+                self._normalize_dt(getattr(binding, "last_reply_posted_at", None)),
+                self._normalize_dt(getattr(binding, "next_reply_run_at", None)),
+                getattr(binding, "reply_interval_max_minutes", None),
+                now,
+            )
+            if next_reply_run_at is None or next_reply_run_at <= now:
                 due.append(binding)
         return due
 
     async def touch_posted(self, binding: object) -> None:
         await self.repo.touch_posted(binding)
 
+    async def touch_reply_posted(self, binding: object, target_msg_id: int | None = None) -> None:
+        await self.repo.touch_reply_posted(binding, target_msg_id=target_msg_id)
+
+    async def schedule_next_reply_run(self, binding: object) -> None:
+        await self.repo.schedule_next_reply_run(binding)
+
+
+class AppSettingsService:
+    MAIN_SYSTEM_PROMPT_KEY = "main_system_prompt"
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.repo = AppSettingsRepository(session)
+
+    async def get_main_system_prompt(self) -> str | None:
+        return await self.repo.get_value(self.MAIN_SYSTEM_PROMPT_KEY)
+
+    async def get_effective_main_system_prompt(self) -> str:
+        prompt = await self.get_main_system_prompt()
+        return prompt or DEFAULT_MAIN_SYSTEM_PROMPT
+
+    async def set_main_system_prompt(self, prompt: str) -> str:
+        cleaned_prompt = prompt.strip()
+        if not cleaned_prompt:
+            raise ValueError("main_system_prompt cannot be empty")
+        await self.repo.set_value(self.MAIN_SYSTEM_PROMPT_KEY, cleaned_prompt)
+        return cleaned_prompt
+
+    async def reset_main_system_prompt(self) -> None:
+        await self.repo.delete(self.MAIN_SYSTEM_PROMPT_KEY)
+
 
 class ChatAutomationService:
+    RECENT_REPLY_WINDOW = 10
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.account_repo = AccountRepository(session)
         self.binding_repo = BindingRepository(session)
         self.message_log_repo = MessageLogRepository(session)
         self.reply_task_repo = ReplyTaskRepository(session)
+        self.app_settings = AppSettingsService(session)
         self.ai = AIService()
+
+    @staticmethod
+    def _build_context_from_detailed(messages: list[dict], limit: int) -> list[dict[str, object]]:
+        context = [
+            {
+                "sender": message.get("sender", "unknown"),
+                "text": message.get("message", ""),
+                "date": message.get("date"),
+            }
+            for message in messages
+            if str(message.get("message", "")).strip()
+        ]
+        return context[-limit:]
+
+    @classmethod
+    def _pick_recent_reply_target(cls, messages: list[dict], last_target_msg_id: int | None) -> dict | None:
+        candidates = [
+            message
+            for message in messages[-cls.RECENT_REPLY_WINDOW:]
+            if str(message.get("message", "")).strip()
+        ]
+        if not candidates:
+            return None
+        if len(candidates) > 1 and last_target_msg_id is not None:
+            filtered = [message for message in candidates if message.get("id") != last_target_msg_id]
+            if filtered:
+                candidates = filtered
+        import random
+        return random.choice(candidates)
 
     async def generate_and_send(
         self,
@@ -368,12 +621,11 @@ class ChatAutomationService:
         if account.auth_status != "authorized" or not account.is_active:
             raise ValueError(f"Account {account_id} is not active and authorized")
 
-        # Получаем/обновляем прокси через менеджер
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        main_system_prompt = await self.app_settings.get_main_system_prompt()
 
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
-            # Проверяем участие и вступаем, если нужно (например, при ручном вызове generate_once)
             try:
                 if not await tg.check_chat_membership(chat_ref):
                     chat_ref = await tg.join_chat(chat_ref)
@@ -382,7 +634,6 @@ class ChatAutomationService:
 
             context = await tg.fetch_recent_messages(chat_ref, limit=context_message_count)
 
-            # ── Алгоритм принятия решения ─────────────────────────────────
             ctx = DecisionContext(
                 messages=context,
                 last_bot_post_at=last_bot_post_at,
@@ -396,16 +647,18 @@ class ChatAutomationService:
                     "decision=SKIP account_id=%s chat_ref=%s reason=%s",
                     account_id, chat_ref, result.reason,
                 )
-                return ""  # бот молчит
-            # ─────────────────────────────────────────────────────────────
+                return ""
 
             content = await self.ai.generate_reply(
                 chat_ref=chat_ref,
                 context_messages=context,
                 system_prompt=system_prompt,
+                main_system_prompt=main_system_prompt,
                 reaction_type=result.reaction_type,
                 character=getattr(account, "character", None),
             )
+            if not content:
+                return ""
             msg_id = await tg.send_message(chat_ref, content)
             await self.message_log_repo.add(account_id=account_id, chat_ref=chat_ref, content=content, msg_id=msg_id)
             return content
@@ -424,6 +677,54 @@ class ChatAutomationService:
             last_bot_post_at=last_bot_post_at,
         )
 
+    async def generate_and_send_recent_reply(self, binding: object) -> tuple[str, int] | None:
+        account = await self.account_repo.get(binding.account_id)
+        if account is None or account.auth_status != "authorized" or not account.is_active:
+            return None
+
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        main_system_prompt = await self.app_settings.get_main_system_prompt()
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            try:
+                if not await tg.check_chat_membership(binding.chat_ref):
+                    await tg.join_chat(binding.chat_ref)
+            except Exception as e:
+                logging.getLogger("tg2.services").warning("Auto-join failed for %s: %s", binding.chat_ref, e)
+
+            recent_limit = max(binding.context_message_count, self.RECENT_REPLY_WINDOW)
+            recent_messages = await tg.fetch_recent_detailed(binding.chat_ref, limit=recent_limit)
+            target = self._pick_recent_reply_target(recent_messages, getattr(binding, "last_reply_target_msg_id", None))
+            if target is None:
+                return None
+
+            context = self._build_context_from_detailed(recent_messages, binding.context_message_count)
+            content = await self.ai.generate_reply(
+                chat_ref=binding.chat_ref,
+                context_messages=context,
+                system_prompt=binding.system_prompt,
+                main_system_prompt=main_system_prompt,
+                reaction_type="reply",
+                character=getattr(account, "character", None),
+                reply_target={
+                    "sender": target.get("sender", "unknown"),
+                    "text": target.get("message", ""),
+                },
+            )
+            if not content:
+                return None
+
+            msg_id = await tg.send_message(binding.chat_ref, content, reply_to=target["id"])
+            await self.message_log_repo.add(
+                account_id=binding.account_id,
+                chat_ref=binding.chat_ref,
+                content=content,
+                msg_id=msg_id,
+            )
+            return content, int(target["id"])
+        finally:
+            await tg.disconnect()
+
     async def create_group(self, account_id: int, description: str) -> str:
         account = await self.account_repo.get(account_id)
         if account is None:
@@ -432,25 +733,24 @@ class ChatAutomationService:
             raise ValueError(f"Account {account_id} is not active and authorized")
 
         group_details = await self.ai.generate_group_details(description)
-        title = group_details.get("title", "Новая группа")
+        title = group_details.get("title", "Р В РЎСљР В РЎвЂўР В Р вЂ Р В Р’В°Р РЋР РЏ Р В РЎвЂ“Р РЋР вЂљР РЋРЎвЂњР В РЎвЂ”Р В РЎвЂ”Р В Р’В°")
         about = group_details.get("about", description)[:255]
         username = group_details.get("username", None)
         messages = group_details.get("messages", [])
 
-        # Получаем/обновляем прокси через менеджер
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
 
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             chat_ref = await tg.create_group(title=title, about=about, username=username, pinned_post=None)
-            
+
             import asyncio
             for msg in messages[:10]:
                 if msg and isinstance(msg, str):
                     msg_id = await tg.send_message(chat_ref, msg)
                     await self.message_log_repo.add(account_id=account_id, chat_ref=chat_ref, content=msg, msg_id=msg_id)
-                    await asyncio.sleep(2)  # Небольшая задержка между сообщениями
-                    
+                    await asyncio.sleep(2)
+
             return chat_ref
         finally:
             await tg.disconnect()
@@ -460,7 +760,6 @@ class ChatAutomationService:
         if account is None or account.auth_status != "authorized" or not account.is_active:
             return
 
-        # Получаем/обновляем прокси через менеджер
         proxy_url = await proxy_manager.get_proxy_for_account(binding.account_id, self.session)
 
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
@@ -468,12 +767,10 @@ class ChatAutomationService:
             recent_msgs = await tg.fetch_recent_detailed(binding.chat_ref, limit=15)
             for msg in recent_msgs:
                 reply_to = msg.get("reply_to_msg_id")
-                
-                # Check if it replied to our message
+
                 if reply_to:
                     our_msg = await self.message_log_repo.get_by_msg_id(binding.account_id, binding.chat_ref, reply_to)
                     if our_msg:
-                        # Ensure we haven't already tasks for this user message
                         existing_task = await self.reply_task_repo.get_by_trigger(binding.account_id, binding.chat_ref, msg["id"])
                         if not existing_task:
                             import random
@@ -491,6 +788,7 @@ class ChatAutomationService:
                             )
         except Exception as e:
             logging.getLogger("tg2.scheduler").error(f"poll_for_replies failed for account {binding.account_id}: {e}")
+        finally:
             await tg.disconnect()
 
     async def process_due_reply_tasks(self) -> None:
@@ -512,12 +810,14 @@ class ChatAutomationService:
                 if not account or not account.is_active or account.auth_status != "authorized":
                     return
 
-                # Получаем/обновляем прокси через менеджер
                 proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+                main_system_prompt = await self.app_settings.get_main_system_prompt()
 
                 tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
                 try:
-                    context = await tg.fetch_recent_messages(task.chat_ref, limit=binding.context_message_count)
+                    detailed = await tg.fetch_recent_detailed(task.chat_ref, limit=max(binding.context_message_count, 15))
+                    context = self._build_context_from_detailed(detailed, binding.context_message_count)
+                    target = next((item for item in detailed if item.get("id") == task.trigger_msg_id), None)
                     ctx = DecisionContext(
                         messages=context,
                         last_bot_post_at=getattr(binding, "last_posted_at", None),
@@ -537,12 +837,25 @@ class ChatAutomationService:
                         chat_ref=task.chat_ref,
                         context_messages=context,
                         system_prompt=binding.system_prompt,
+                        main_system_prompt=main_system_prompt,
                         reaction_type=decision.reaction_type,
                         character=getattr(account, "character", None),
+                        reply_target=(
+                            {
+                                "sender": target.get("sender", "unknown"),
+                                "text": target.get("message", ""),
+                            }
+                            if target
+                            else None
+                        ),
                     )
+                    if not content:
+                        await self.reply_task_repo.mark_completed(task)
+                        return
                     msg_id = await tg.send_message(task.chat_ref, content, reply_to=task.trigger_msg_id)
                     await self.message_log_repo.add(account_id=task.account_id, chat_ref=task.chat_ref, content=content, msg_id=msg_id)
                     await self.reply_task_repo.mark_completed(task)
+                    await self.binding_repo.touch_posted(binding)
                     logging.getLogger("tg2.scheduler").info(
                         "sent_reply account_id=%s chat_ref=%s trigger_msg_id=%s msg_id=%s",
                         task.account_id, task.chat_ref, task.trigger_msg_id, msg_id
@@ -576,3 +889,7 @@ class CharacterService:
         if account:
             account.character_id = character_id
             await self.session.commit()
+
+
+
+

@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -48,11 +48,17 @@ async def ensure_schema() -> None:
         columns = {row[1] for row in column_rows.all()}
 
         migrations = [
+            ("chat_title", "ALTER TABLE chat_bindings ADD COLUMN chat_title VARCHAR(256) NULL"),
             ("interval_min_minutes", "ALTER TABLE chat_bindings ADD COLUMN interval_min_minutes INTEGER NOT NULL DEFAULT 10"),
             ("interval_max_minutes", "ALTER TABLE chat_bindings ADD COLUMN interval_max_minutes INTEGER NOT NULL DEFAULT 10"),
+            ("reply_interval_min_minutes", "ALTER TABLE chat_bindings ADD COLUMN reply_interval_min_minutes INTEGER NULL"),
+            ("reply_interval_max_minutes", "ALTER TABLE chat_bindings ADD COLUMN reply_interval_max_minutes INTEGER NULL"),
             ("context_message_count", "ALTER TABLE chat_bindings ADD COLUMN context_message_count INTEGER NOT NULL DEFAULT 12"),
             ("system_prompt", "ALTER TABLE chat_bindings ADD COLUMN system_prompt TEXT NULL"),
             ("next_run_at", "ALTER TABLE chat_bindings ADD COLUMN next_run_at DATETIME NULL"),
+            ("last_reply_posted_at", "ALTER TABLE chat_bindings ADD COLUMN last_reply_posted_at DATETIME NULL"),
+            ("next_reply_run_at", "ALTER TABLE chat_bindings ADD COLUMN next_reply_run_at DATETIME NULL"),
+            ("last_reply_target_msg_id", "ALTER TABLE chat_bindings ADD COLUMN last_reply_target_msg_id INTEGER NULL"),
         ]
         for column_name, sql in migrations:
             if column_name not in columns:
@@ -71,6 +77,8 @@ async def ensure_schema() -> None:
                 await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN proxy_session_id VARCHAR(128) NULL"))
             if "character_id" not in ta_cols:
                 await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN character_id INTEGER NULL"))
+            if "account_name" not in ta_cols:
+                await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN account_name VARCHAR(256) NULL"))
 
         await connection.execute(
             text(
@@ -84,7 +92,5 @@ async def ensure_schema() -> None:
                 "context_message_count = COALESCE(context_message_count, 12)"
             )
         )
-        
-        # Create characters table if not exists (base class handles it usually if we call create_all)
-        # But since we are doing manual ensure_schema, let's just use create_all for missing tables
+
         await connection.run_sync(Base.metadata.create_all)

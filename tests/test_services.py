@@ -1,8 +1,9 @@
-﻿import unittest
+import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app.services import AccountService, BindingService
+from app.ai import DEFAULT_MAIN_SYSTEM_PROMPT
+from app.services import AccountService, AppSettingsService, BindingService
 
 
 class AccountServiceLogicTests(unittest.IsolatedAsyncioTestCase):
@@ -29,6 +30,58 @@ class BindingServiceLogicTests(unittest.TestCase):
         service = BindingService.__new__(BindingService)
         with self.assertRaises(ValueError):
             BindingService._validate_settings(service, 15, 5, 12)
+
+    def test_validate_settings_rejects_invalid_reply_range(self) -> None:
+        service = BindingService.__new__(BindingService)
+        with self.assertRaises(ValueError):
+            BindingService._validate_settings(service, 5, 10, 12, 30, 15)
+
+    def test_resolve_reply_interval_can_disable(self) -> None:
+        service = BindingService.__new__(BindingService)
+        binding = SimpleNamespace(reply_interval_min_minutes=10, reply_interval_max_minutes=20)
+        self.assertEqual(
+            BindingService._resolve_reply_interval(service, binding, None, None, True),
+            (None, None),
+        )
+
+
+class InMemoryAppSettingsRepo:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get_value(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set_value(self, key: str, value: str | None):
+        self.values[key] = value or ""
+        return SimpleNamespace(key=key, value=value)
+
+    async def delete(self, key: str) -> int:
+        return int(self.values.pop(key, None) is not None)
+
+
+class AppSettingsServiceLogicTests(unittest.IsolatedAsyncioTestCase):
+    async def test_main_system_prompt_roundtrip(self) -> None:
+        service = AppSettingsService.__new__(AppSettingsService)
+        service.repo = InMemoryAppSettingsRepo()
+
+        saved = await AppSettingsService.set_main_system_prompt(service, "  stay brief  ")
+
+        self.assertEqual(saved, "stay brief")
+        self.assertEqual(await AppSettingsService.get_main_system_prompt(service), "stay brief")
+        self.assertEqual(await AppSettingsService.get_effective_main_system_prompt(service), "stay brief")
+
+        await AppSettingsService.reset_main_system_prompt(service)
+
+        self.assertIsNone(await AppSettingsService.get_main_system_prompt(service))
+        self.assertEqual(await AppSettingsService.get_effective_main_system_prompt(service), DEFAULT_MAIN_SYSTEM_PROMPT)
+
+    async def test_main_system_prompt_rejects_empty_value(self) -> None:
+        service = AppSettingsService.__new__(AppSettingsService)
+        service.repo = InMemoryAppSettingsRepo()
+
+        with self.assertRaises(ValueError):
+            await AppSettingsService.set_main_system_prompt(service, "   ")
 
 
 if __name__ == "__main__":

@@ -130,30 +130,33 @@ class TelegramAccountClient:
         await client.sign_in(password=password)
         return "authorized"
 
+    async def _resolve_sender_name(self, message) -> str:
+        sender_name = "Р В Р в‚¬Р РЋРІР‚РЋР В Р’В°Р РЋР С“Р РЋРІР‚С™Р В Р вЂ¦Р В РЎвЂР В РЎвЂќ"
+        try:
+            sender = await message.get_sender()
+            if sender:
+                if hasattr(sender, "first_name") and sender.first_name:
+                    sender_name = sender.first_name
+                    if hasattr(sender, "last_name") and sender.last_name:
+                        sender_name += f" {sender.last_name}"
+                elif hasattr(sender, "title") and sender.title:
+                    sender_name = sender.title
+                elif hasattr(sender, "username") and sender.username:
+                    sender_name = sender.username
+        except Exception:
+            pass
+        return sender_name
+
     async def fetch_recent_messages(self, chat_ref: str, limit: int = 12) -> list[dict]:
         logger.debug("fetch_recent_messages session=%s chat_ref=%s limit=%s", self.session_name, chat_ref, limit)
         client = await self.connect()
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         messages = []
-        # Итерируем с увеличенным лимитом, чтобы набрать нужное кол-во чужих сообщений
+        # ?????????????????? ?? ?????????????????????? ??????????????, ?????????? ?????????????? ???????????? ??????-???? ?????????? ??????????????????
         fetched_total = 0
         async for message in client.iter_messages(entity, limit=limit * 3):
             if message.message and not message.out:
-                sender_name = "Участник"
-                try:
-                    sender = await message.get_sender()
-                    if sender:
-                        if hasattr(sender, 'first_name') and sender.first_name:
-                            sender_name = sender.first_name
-                            if hasattr(sender, 'last_name') and sender.last_name:
-                                sender_name += f" {sender.last_name}"
-                        elif hasattr(sender, 'title') and sender.title:
-                            sender_name = sender.title
-                        elif hasattr(sender, 'username') and sender.username:
-                            sender_name = sender.username
-                except Exception:
-                    pass
-
+                sender_name = await self._resolve_sender_name(message)
                 messages.append({"sender": sender_name, "text": message.message, "date": message.date})
                 fetched_total += 1
                 if fetched_total >= limit:
@@ -167,10 +170,12 @@ class TelegramAccountClient:
         messages = []
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         async for message in client.iter_messages(entity, limit=limit):
-            # Пропускаем собственные сообщения бота
+            # ???????????????????? ?????????????????????? ?????????????????? ????????
             if message.message and not message.out:
+                sender_name = await self._resolve_sender_name(message)
                 messages.append({
                     "id": message.id,
+                    "sender": sender_name,
                     "message": message.message,
                     "reply_to_msg_id": message.reply_to.reply_to_msg_id if message.reply_to else None,
                     "date": message.date,
@@ -186,28 +191,56 @@ class TelegramAccountClient:
         logger.info("send_message ok session=%s chat_ref=%s msg_id=%s", self.session_name, chat_ref, msg.id)
         return msg.id
 
+    @staticmethod
+    def _resolve_entity_name(entity_obj) -> str | None:
+        if getattr(entity_obj, "title", None):
+            return str(entity_obj.title)
+        first_name = getattr(entity_obj, "first_name", None)
+        last_name = getattr(entity_obj, "last_name", None)
+        full_name = " ".join(part for part in [first_name, last_name] if part)
+        if full_name:
+            return full_name
+        if getattr(entity_obj, "username", None):
+            return str(entity_obj.username)
+        if getattr(entity_obj, "phone", None):
+            return str(entity_obj.phone)
+        return None
+
+    async def get_chat_title(self, chat_ref: str) -> str | None:
+        client = await self.connect()
+        entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
+        entity_obj = await client.get_entity(entity)
+        return self._resolve_entity_name(entity_obj)
+
+    async def get_account_name(self) -> str | None:
+        client = await self.connect()
+        me = await client.get_me()
+        if me is None:
+            return None
+        return self._resolve_entity_name(me)
+
     async def check_chat_membership(self, chat_ref: str) -> bool:
-        """Возвращает True, если аккаунт уже состоит в чате."""
-        # Для ссылок-приглашений пропускаем проверку и сразу идем в join (он сам разберется)
+        """Р В РІР‚в„ўР В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР РЋРІР‚С™ True, Р В Р’ВµР РЋР С“Р В Р’В»Р В РЎвЂ Р В Р’В°Р В РЎвЂќР В РЎвЂќР В Р’В°Р РЋРЎвЂњР В Р вЂ¦Р РЋРІР‚С™ Р РЋРЎвЂњР В Р’В¶Р В Р’Вµ Р РЋР С“Р В РЎвЂўР РЋР С“Р РЋРІР‚С™Р В РЎвЂўР В РЎвЂР РЋРІР‚С™ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™Р В Р’Вµ."""
+        # Р В РІР‚СњР В Р’В»Р РЋР РЏ Р РЋР С“Р РЋР С“Р РЋРІР‚в„–Р В Р’В»Р В РЎвЂўР В РЎвЂќ-Р В РЎвЂ”Р РЋР вЂљР В РЎвЂР В РЎвЂ“Р В Р’В»Р В Р’В°Р РЋРІвЂљВ¬Р В Р’ВµР В Р вЂ¦Р В РЎвЂР В РІвЂћвЂ“ Р В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В РЎвЂ”Р РЋРЎвЂњР РЋР С“Р В РЎвЂќР В Р’В°Р В Р’ВµР В РЎВ Р В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В Р вЂ Р В Р’ВµР РЋР вЂљР В РЎвЂќР РЋРЎвЂњ Р В РЎвЂ Р РЋР С“Р РЋР вЂљР В Р’В°Р В Р’В·Р РЋРЎвЂњ Р В РЎвЂР В РўвЂР В Р’ВµР В РЎВ Р В Р вЂ  join (Р В РЎвЂўР В Р вЂ¦ Р РЋР С“Р В Р’В°Р В РЎВ Р РЋР вЂљР В Р’В°Р В Р’В·Р В Р’В±Р В Р’ВµР РЋР вЂљР В Р’ВµР РЋРІР‚С™Р РЋР С“Р РЋР РЏ)
         if "t.me/" in chat_ref or chat_ref.strip().startswith("+"):
             return False
 
         client = await self.connect()
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         try:
-            # get_permissions бросает исключение, если мы не в чате
+            # get_permissions Р В Р’В±Р РЋР вЂљР В РЎвЂўР РЋР С“Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В РЎвЂР РЋР С“Р В РЎвЂќР В Р’В»Р РЋР вЂ№Р РЋРІР‚РЋР В Р’ВµР В Р вЂ¦Р В РЎвЂР В Р’Вµ, Р В Р’ВµР РЋР С“Р В Р’В»Р В РЎвЂ Р В РЎВР РЋРІР‚в„– Р В Р вЂ¦Р В Р’Вµ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™Р В Р’Вµ
             await client.get_permissions(entity, 'me')
             return True
         except Exception:
             return False
 
     async def join_chat(self, chat_ref: str) -> str:
-        """Вступает в чат и возвращает нормализованный chat_ref (username или ID)."""
+        """Р В РІР‚в„ўР РЋР С“Р РЋРІР‚С™Р РЋРЎвЂњР В РЎвЂ”Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™ Р В РЎвЂ Р В Р вЂ Р В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В Р вЂ¦Р В РЎвЂўР РЋР вЂљР В РЎВР В Р’В°Р В Р’В»Р В РЎвЂР В Р’В·Р В РЎвЂўР В Р вЂ Р В Р’В°Р В Р вЂ¦Р В Р вЂ¦Р РЋРІР‚в„–Р В РІвЂћвЂ“ chat_ref (username Р В РЎвЂР В Р’В»Р В РЎвЂ ID)."""
         logger.info("join_chat session=%s chat_ref=%s", self.session_name, chat_ref)
         client = await self.connect()
         raw = chat_ref.strip()
         
-        # 1. Инвайт-ссылки t.me/+HASH или +HASH
+        # 1. Р В Р’ВР В Р вЂ¦Р В Р вЂ Р В Р’В°Р В РІвЂћвЂ“Р РЋРІР‚С™-Р РЋР С“Р РЋР С“Р РЋРІР‚в„–Р В Р’В»Р В РЎвЂќР В РЎвЂ t.me/+HASH Р В РЎвЂР В Р’В»Р В РЎвЂ +HASH
         invite_hash = None
         if "t.me/+" in raw or "t.me/joinchat/" in raw:
             invite_hash = raw.split("/")[-1].replace("+", "")
@@ -222,7 +255,7 @@ class TelegramAccountClient:
                     res = getattr(chat, "username", None) or f"-100{chat.id}"
                     logger.info("join_chat via invite ok session=%s result=%s", self.session_name, res)
                     return res
-                # Если вернуло не Updates (редко), попробуем CheckChatInviteRequest
+                # Р В РІР‚СћР РЋР С“Р В Р’В»Р В РЎвЂ Р В Р вЂ Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р РЋРЎвЂњР В Р’В»Р В РЎвЂў Р В Р вЂ¦Р В Р’Вµ Updates (Р РЋР вЂљР В Р’ВµР В РўвЂР В РЎвЂќР В РЎвЂў), Р В РЎвЂ”Р В РЎвЂўР В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В Р’В±Р РЋРЎвЂњР В Р’ВµР В РЎВ CheckChatInviteRequest
                 invite = await client(CheckChatInviteRequest(invite_hash))
                 chat = invite.chat
                 res = getattr(chat, "username", None) or f"-100{chat.id}"
@@ -237,7 +270,7 @@ class TelegramAccountClient:
                 logger.error("Failed to join via invite hash %s: %s", invite_hash, e)
                 raise
 
-        # 2. Обычный ID или юзернейм
+        # 2. Р В РЎвЂєР В Р’В±Р РЋРІР‚в„–Р РЋРІР‚РЋР В Р вЂ¦Р РЋРІР‚в„–Р В РІвЂћвЂ“ ID Р В РЎвЂР В Р’В»Р В РЎвЂ Р РЋР вЂ№Р В Р’В·Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р В Р’ВµР В РІвЂћвЂ“Р В РЎВ
         entity = int(raw) if raw.lstrip('-').isdigit() else raw
         try:
             entity_obj = await client.get_entity(entity)
@@ -265,7 +298,7 @@ class TelegramAccountClient:
         client = await self.connect()
         result = await client(CreateChannelRequest(title=title, about=about, megagroup=True))
         chat = result.chats[0]
-        # Даём Telegram 10 секунд на регистрацию группы перед редактированием
+        # Р В РІР‚СњР В Р’В°Р РЋРІР‚ВР В РЎВ Telegram 10 Р РЋР С“Р В Р’ВµР В РЎвЂќР РЋРЎвЂњР В Р вЂ¦Р В РўвЂ Р В Р вЂ¦Р В Р’В° Р РЋР вЂљР В Р’ВµР В РЎвЂ“Р В РЎвЂР РЋР С“Р РЋРІР‚С™Р РЋР вЂљР В Р’В°Р РЋРІР‚В Р В РЎвЂР РЋР вЂ№ Р В РЎвЂ“Р РЋР вЂљР РЋРЎвЂњР В РЎвЂ”Р В РЎвЂ”Р РЋРІР‚в„– Р В РЎвЂ”Р В Р’ВµР РЋР вЂљР В Р’ВµР В РўвЂ Р РЋР вЂљР В Р’ВµР В РўвЂР В Р’В°Р В РЎвЂќР РЋРІР‚С™Р В РЎвЂР РЋР вЂљР В РЎвЂўР В Р вЂ Р В Р’В°Р В Р вЂ¦Р В РЎвЂР В Р’ВµР В РЎВ
         await asyncio.sleep(10)
         if username:
             await client(UpdateUsernameRequest(channel=chat, username=username))
@@ -274,5 +307,6 @@ class TelegramAccountClient:
 
         chat_ref = getattr(chat, "username", None) or f"-100{chat.id}"
         logger.info("create_group ok session=%s chat_ref=%s", self.session_name, chat_ref)
-        # Если юзернейма нет, возвращаем ID с префиксом -100 для корректной работы Telethon
+        # Р В РІР‚СћР РЋР С“Р В Р’В»Р В РЎвЂ Р РЋР вЂ№Р В Р’В·Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р В Р’ВµР В РІвЂћвЂ“Р В РЎВР В Р’В° Р В Р вЂ¦Р В Р’ВµР РЋРІР‚С™, Р В Р вЂ Р В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР В РЎВ ID Р РЋР С“ Р В РЎвЂ”Р РЋР вЂљР В Р’ВµР РЋРІР‚С›Р В РЎвЂР В РЎвЂќР РЋР С“Р В РЎвЂўР В РЎВ -100 Р В РўвЂР В Р’В»Р РЋР РЏ Р В РЎвЂќР В РЎвЂўР РЋР вЂљР РЋР вЂљР В Р’ВµР В РЎвЂќР РЋРІР‚С™Р В Р вЂ¦Р В РЎвЂўР В РІвЂћвЂ“ Р РЋР вЂљР В Р’В°Р В Р’В±Р В РЎвЂўР РЋРІР‚С™Р РЋРІР‚в„– Telethon
         return chat_ref
+

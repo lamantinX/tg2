@@ -1,7 +1,7 @@
 ﻿---
 tracker:
   kind: linear
-  project_slug: "tg-2-0c0f72b71f93"
+  project_slug: "0c0f72b71f93"
   active_states:
     - Todo
     - In Progress
@@ -68,6 +68,7 @@ Completion bar:
 - The requested code or config change is implemented.
 - Relevant tests or validation commands have been run and results are summarized.
 - Any remaining blocker or risk is stated briefly and concretely.
+
 
 
 

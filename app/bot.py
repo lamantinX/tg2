@@ -55,6 +55,7 @@ class BindingSettingsStates(StatesGroup):
 
 class MainSettingsStates(StatesGroup):
     waiting_prompt = State()
+    waiting_model = State()
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -68,8 +69,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Статус отправки", callback_data="menu:status")
     builder.button(text="Перезапустить задачи", callback_data="menu:restart_runners")
     builder.button(text="Основной промпт", callback_data="menu:main_prompt")
+    builder.button(text="Модель", callback_data="menu:model")
     builder.button(text="Вернуться в начало", callback_data="menu:back")
-    builder.adjust(2, 2, 2, 2, 2)
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -77,6 +79,15 @@ def main_prompt_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Изменить основной промпт", callback_data="menu:main_prompt:set")
     builder.button(text="Сбросить основной промпт", callback_data="menu:main_prompt:reset")
+    builder.button(text="Вернуться в начало", callback_data="menu:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def model_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Изменить модель", callback_data="menu:model:set")
+    builder.button(text="Сбросить модель", callback_data="menu:model:reset")
     builder.button(text="Вернуться в начало", callback_data="menu:back")
     builder.adjust(1)
     return builder.as_markup()
@@ -183,6 +194,11 @@ def format_main_prompt_settings(prompt: str, is_custom: bool) -> str:
         f"Основной системный промпт ({source}):\n"
         f"{_prompt_preview(prompt, limit=1200)}"
     )
+
+
+def format_model_settings(model: str, is_custom: bool) -> str:
+    source = "пользовательская" if is_custom else "по умолчанию (.env)"
+    return f"Текущая модель ({source}):\n<code>{html.escape(model)}</code>"
 
 
 def _format_interval_range(interval_min: int | None, interval_max: int | None) -> str:
@@ -779,6 +795,43 @@ def build_bot() -> tuple[Bot, Dispatcher]:
             )
         await callback.answer()
 
+    @dp.callback_query(F.data == "menu:model")
+    async def callback_model(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            custom_model = await service.get_openai_model()
+            effective_model = await service.get_effective_openai_model()
+            await callback.message.answer(
+                format_model_settings(effective_model, is_custom=custom_model is not None),
+                reply_markup=model_keyboard(),
+            )
+        await callback.answer()
+
+    @dp.callback_query(F.data == "menu:model:set")
+    async def callback_model_set(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        await state.set_state(MainSettingsStates.waiting_model)
+        await callback.message.answer(
+            "Введи название модели, например `gpt-5-mini` или `claude-3-5-haiku-latest`.",
+            reply_markup=back_keyboard(),
+            parse_mode=None,
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data == "menu:model:reset")
+    async def callback_model_reset(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            await service.reset_openai_model()
+            effective_model = await service.get_effective_openai_model()
+            await callback.message.answer(
+                format_model_settings(effective_model, is_custom=False),
+                reply_markup=model_keyboard(),
+            )
+        await callback.answer()
+
     @dp.callback_query(F.data == "menu:back")
     async def callback_back(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
@@ -917,6 +970,22 @@ def build_bot() -> tuple[Bot, Dispatcher]:
                     format_main_prompt_settings(saved_prompt, is_custom=True),
                     reply_markup=main_prompt_keyboard(),
                     parse_mode=None,
+                )
+            except ValueError as exc:
+                await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard(), parse_mode=None)
+                return
+        await state.clear()
+
+    @dp.message(MainSettingsStates.waiting_model)
+    async def process_waiting_model(message: Message, state: FSMContext) -> None:
+        model = (message.text or "").strip()
+        async with SessionLocal() as session:
+            service = AppSettingsService(session)
+            try:
+                saved_model = await service.set_openai_model(model)
+                await message.answer(
+                    format_model_settings(saved_model, is_custom=True),
+                    reply_markup=model_keyboard(),
                 )
             except ValueError as exc:
                 await message.answer(f"Ошибка: {exc}", reply_markup=back_keyboard(), parse_mode=None)

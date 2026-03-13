@@ -79,6 +79,18 @@ class AIServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Custom global prompt", system_text)
         self.assertNotIn(DEFAULT_MAIN_SYSTEM_PROMPT, system_text)
 
+    async def test_openai_path_uses_model_override(self) -> None:
+        FakeAsyncClient.last_json = None
+        with patch.object(settings, "openai_api_key", "test-key"):
+            with patch("app.ai.httpx.AsyncClient", FakeAsyncClient):
+                await AIService().generate_reply(
+                    "chat42",
+                    ["hello"],
+                    model="gpt-5-mini",
+                )
+        self.assertIsNotNone(FakeAsyncClient.last_json)
+        self.assertEqual(FakeAsyncClient.last_json["model"], "gpt-5-mini")
+
     def test_skip_generated_reply_when_it_repeats_loop_keywords(self) -> None:
         service = AIService()
         context = [

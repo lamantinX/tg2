@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.ai import DEFAULT_MAIN_SYSTEM_PROMPT
+from app.config import settings
 from app.services import AccountService, AppSettingsService, BindingService
 
 
@@ -82,6 +83,28 @@ class AppSettingsServiceLogicTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ValueError):
             await AppSettingsService.set_main_system_prompt(service, "   ")
+
+    async def test_openai_model_roundtrip(self) -> None:
+        service = AppSettingsService.__new__(AppSettingsService)
+        service.repo = InMemoryAppSettingsRepo()
+
+        saved = await AppSettingsService.set_openai_model(service, "  gpt-5-mini  ")
+
+        self.assertEqual(saved, "gpt-5-mini")
+        self.assertEqual(await AppSettingsService.get_openai_model(service), "gpt-5-mini")
+        self.assertEqual(await AppSettingsService.get_effective_openai_model(service), "gpt-5-mini")
+
+        await AppSettingsService.reset_openai_model(service)
+
+        self.assertIsNone(await AppSettingsService.get_openai_model(service))
+        self.assertEqual(await AppSettingsService.get_effective_openai_model(service), settings.openai_model)
+
+    async def test_openai_model_rejects_empty_value(self) -> None:
+        service = AppSettingsService.__new__(AppSettingsService)
+        service.repo = InMemoryAppSettingsRepo()
+
+        with self.assertRaises(ValueError):
+            await AppSettingsService.set_openai_model(service, "   ")
 
 
 if __name__ == "__main__":

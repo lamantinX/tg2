@@ -223,6 +223,9 @@ class AIService:
                     fragments.append(text.strip())
         return "\n".join(fragments).strip()
 
+    def _resolve_model(self, model: str | None) -> str:
+        return (model or settings.openai_model).strip() or settings.openai_model
+
     async def generate_reply(
         self,
         chat_ref: str,
@@ -233,6 +236,7 @@ class AIService:
         character: Character | None = None,
         recent_self_messages: list[str] | None = None,
         reply_target: dict[str, str] | None = None,
+        model: str | None = None,
     ) -> str:
         normalized_context = self._normalize_context_messages(context_messages)
         if not settings.openai_api_key:
@@ -280,8 +284,9 @@ class AIService:
             + reply_target_hint
         )
 
+        resolved_model = self._resolve_model(model)
         request_payload = {
-            "model": settings.openai_model,
+            "model": resolved_model,
             "input": [
                 {
                     "role": "system",
@@ -302,7 +307,7 @@ class AIService:
             "generate_reply: request chat_ref=%s context_count=%s model=%s",
             chat_ref,
             len(normalized_context),
-            settings.openai_model,
+            resolved_model,
         )
         try:
             async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as client:
@@ -324,7 +329,7 @@ class AIService:
         logger.info("generate_reply: ok chat_ref=%s reply_len=%s", chat_ref, len(content))
         return self._ensure_disclosure(content)
 
-    async def generate_group_details(self, description: str) -> dict:
+    async def generate_group_details(self, description: str, model: str | None = None) -> dict:
         if not settings.openai_api_key:
             logger.warning("generate_group_details: no openai_api_key, using stub")
             return {
@@ -340,8 +345,9 @@ class AIService:
             "openers that sound like different humans entering a new group."
         )
 
+        resolved_model = self._resolve_model(model)
         request_payload = {
-            "model": settings.openai_model,
+            "model": resolved_model,
             "input": [
                 {
                     "role": "system",
@@ -358,7 +364,7 @@ class AIService:
             "Content-Type": "application/json",
         }
 
-        logger.info("generate_group_details: request model=%s", settings.openai_model)
+        logger.info("generate_group_details: request model=%s", resolved_model)
         try:
             async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as client:
                 response = await client.post(

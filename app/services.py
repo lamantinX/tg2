@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIService, DEFAULT_MAIN_SYSTEM_PROMPT
+from app.config import settings
 from app.decision_engine import DecisionContext, decision_engine
 from app.repositories import AccountRepository, AppSettingsRepository, BindingRepository, CharacterRepository, MessageLogRepository, ReplyTaskRepository
 from app.telegram_client import TelegramAccountClient
@@ -544,6 +545,7 @@ class BindingService:
 
 class AppSettingsService:
     MAIN_SYSTEM_PROMPT_KEY = "main_system_prompt"
+    OPENAI_MODEL_KEY = "openai_model"
 
     def __init__(self, session: AsyncSession) -> None:
         self.repo = AppSettingsRepository(session)
@@ -564,6 +566,23 @@ class AppSettingsService:
 
     async def reset_main_system_prompt(self) -> None:
         await self.repo.delete(self.MAIN_SYSTEM_PROMPT_KEY)
+
+    async def get_openai_model(self) -> str | None:
+        return await self.repo.get_value(self.OPENAI_MODEL_KEY)
+
+    async def get_effective_openai_model(self) -> str:
+        model = await self.get_openai_model()
+        return model or settings.openai_model
+
+    async def set_openai_model(self, model: str) -> str:
+        cleaned_model = model.strip()
+        if not cleaned_model:
+            raise ValueError("openai_model cannot be empty")
+        await self.repo.set_value(self.OPENAI_MODEL_KEY, cleaned_model)
+        return cleaned_model
+
+    async def reset_openai_model(self) -> None:
+        await self.repo.delete(self.OPENAI_MODEL_KEY)
 
 
 class ChatAutomationService:
@@ -623,6 +642,7 @@ class ChatAutomationService:
 
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
         main_system_prompt = await self.app_settings.get_main_system_prompt()
+        model = await self.app_settings.get_effective_openai_model()
 
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
@@ -654,6 +674,7 @@ class ChatAutomationService:
                 context_messages=context,
                 system_prompt=system_prompt,
                 main_system_prompt=main_system_prompt,
+                model=model,
                 reaction_type=result.reaction_type,
                 character=getattr(account, "character", None),
             )
@@ -684,6 +705,7 @@ class ChatAutomationService:
 
         proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
         main_system_prompt = await self.app_settings.get_main_system_prompt()
+        model = await self.app_settings.get_effective_openai_model()
         tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
         try:
             try:
@@ -704,6 +726,7 @@ class ChatAutomationService:
                 context_messages=context,
                 system_prompt=binding.system_prompt,
                 main_system_prompt=main_system_prompt,
+                model=model,
                 reaction_type="reply",
                 character=getattr(account, "character", None),
                 reply_target={
@@ -732,7 +755,8 @@ class ChatAutomationService:
         if account.auth_status != "authorized" or not account.is_active:
             raise ValueError(f"Account {account_id} is not active and authorized")
 
-        group_details = await self.ai.generate_group_details(description)
+        model = await self.app_settings.get_effective_openai_model()
+        group_details = await self.ai.generate_group_details(description, model=model)
         title = group_details.get("title", "Р В РЎСљР В РЎвЂўР В Р вЂ Р В Р’В°Р РЋР РЏ Р В РЎвЂ“Р РЋР вЂљР РЋРЎвЂњР В РЎвЂ”Р В РЎвЂ”Р В Р’В°")
         about = group_details.get("about", description)[:255]
         username = group_details.get("username", None)
@@ -812,6 +836,7 @@ class ChatAutomationService:
 
                 proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
                 main_system_prompt = await self.app_settings.get_main_system_prompt()
+                model = await self.app_settings.get_effective_openai_model()
 
                 tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
                 try:
@@ -838,6 +863,7 @@ class ChatAutomationService:
                         context_messages=context,
                         system_prompt=binding.system_prompt,
                         main_system_prompt=main_system_prompt,
+                        model=model,
                         reaction_type=decision.reaction_type,
                         character=getattr(account, "character", None),
                         reply_target=(

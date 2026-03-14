@@ -144,6 +144,7 @@ class AccountPresentationTests(unittest.TestCase):
 
         self.assertIn("Мастер", labels)
         self.assertIn("Аккаунты", labels)
+        self.assertIn("Проверить прокси", labels)
 
 
 if __name__ == "__main__":

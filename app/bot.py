@@ -24,6 +24,7 @@ from aiogram .utils .keyboard import InlineKeyboardBuilder
 
 from app .config import settings 
 from app .db import SessionLocal 
+from app .proxy_manager import proxy_manager 
 from app .scheduler import restart_scheduler 
 from app .services import AccountService ,AppSettingsService ,BindingService ,ChatAutomationService 
 
@@ -66,6 +67,7 @@ def main_menu_keyboard ()->InlineKeyboardMarkup :
     builder .button (text ='Аккаунты',callback_data ="menu:accounts")
     builder .button (text ='Чаты',callback_data ="menu:chats")
     builder .button (text ='Проверить аккаунты',callback_data ="menu:audit")
+    builder .button (text ='Проверить прокси',callback_data ="menu:proxy_health")
     builder .button (text ='Статус отправки',callback_data ="menu:status")
     builder .button (text ='Перезапустить задачи',callback_data ="menu:restart_runners")
     builder .button (text ='Основной промпт',callback_data ="menu:main_prompt")
@@ -250,6 +252,20 @@ def format_send_status (items :list [dict [str ,object ]])->str :
         f"({item .get ('reply_state','disabled')}) | reply_next={_short_time (item .get ('next_reply_run_at'))} | "
         f"ctx={item .get ('context_message_count','-')}"
         )
+    return "\n".join (lines )
+
+
+def format_proxy_health_status (stats :dict [str ,object ])->str :
+    lines =[
+    "Proxy health check completed:",
+    f"enabled={int (bool (stats .get ('decodo_enabled',False )))}",
+    f"host={stats .get ('decodo_proxy_host','-')}",
+    f"port={stats .get ('decodo_proxy_port','-')}",
+    f"total_sessions={stats .get ('total_sessions',0 )}",
+    f"alive_sessions={stats .get ('alive_sessions',0 )}",
+    f"assigned_accounts={stats .get ('total_accounts_assigned',0 )}",
+    f"accounts_per_proxy={stats .get ('accounts_per_proxy','-')}",
+    ]
     return "\n".join (lines )
 
 
@@ -861,6 +877,14 @@ def build_bot ()->tuple [Bot ,Dispatcher ]:
         async with SessionLocal ()as session :
             report =await AccountService (session ).audit_accounts ()
             await callback .message .answer (format_audit_report (report ),reply_markup =main_menu_keyboard ())
+            await callback .answer ()
+
+    @dp .callback_query (F .data =="menu:proxy_health")
+    async def callback_proxy_health (callback :CallbackQuery )->None :
+        async with SessionLocal ()as session :
+            await proxy_manager .health_check_all (session )
+            stats =await proxy_manager .get_stats ()
+            await callback .message .answer (format_proxy_health_status (stats ),reply_markup =main_menu_keyboard (),parse_mode =None )
             await callback .answer ()
 
     @dp .callback_query (F .data =="menu:status")

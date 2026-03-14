@@ -1,4 +1,6 @@
-﻿from pydantic import BaseModel, Field
+from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class AccountCreate(BaseModel):
@@ -75,6 +77,9 @@ class BindingRead(BaseModel):
     context_message_count: int
     system_prompt: str | None
     is_enabled: bool
+    auto_paused: bool
+    auto_pause_reason: str | None
+    auto_paused_at: datetime | None
 
     class Config:
         from_attributes = True

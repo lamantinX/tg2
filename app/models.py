@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -43,7 +43,7 @@ class Character(Base):
     dislikes: Mapped[str | None] = mapped_column(Text, nullable=True)
     speech_style: Mapped[str | None] = mapped_column(Text, nullable=True)
     background: Mapped[str | None] = mapped_column(Text, nullable=True)
-    location: Mapped[str | None] = mapped_column(String(128), default="Р СџР В°РЎвЂљРЎвЂљР В°Р в„–РЎРЏ")
+    location: Mapped[str | None] = mapped_column(String(128), default="Паттайя")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     accounts: Mapped[list["TelegramAccount"]] = relationship(back_populates="character")
@@ -64,6 +64,9 @@ class ChatBinding(Base):
     context_message_count: Mapped[int] = mapped_column(Integer, default=12)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_pause_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    auto_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_reply_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

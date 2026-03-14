@@ -49,10 +49,17 @@ class AccountRepository:
         await self.session.refresh(account)
         return account
 
-    async def mark_status(self, account: TelegramAccount, auth_status: str, is_active: bool) -> TelegramAccount:
+    async def mark_status(
+        self,
+        account: TelegramAccount,
+        auth_status: str,
+        is_active: bool,
+        *,
+        touch_last_login: bool = True,
+    ) -> TelegramAccount:
         account.auth_status = auth_status
         account.is_active = is_active
-        if auth_status == "authorized":
+        if auth_status == "authorized" and touch_last_login:
             account.last_login_at = utcnow()
         await self.session.commit()
         await self.session.refresh(account)
@@ -63,6 +70,12 @@ class AccountRepository:
         await self.session.commit()
         await self.session.refresh(account)
         return account
+
+    async def delete(self, account: TelegramAccount) -> int:
+        await self.session.delete(account)
+        await self.session.commit()
+        return 1
+
 
 class BindingRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -117,7 +130,10 @@ class BindingRepository:
         return list(await self.session.scalars(query))
 
     async def list_enabled(self) -> list[ChatBinding]:
-        query = select(ChatBinding).where(ChatBinding.is_enabled.is_(True)).options(*self._account_load_options())
+        query = select(ChatBinding).where(
+            ChatBinding.is_enabled.is_(True),
+            ChatBinding.auto_paused.is_(False),
+        ).options(*self._account_load_options())
         return list(await self.session.scalars(query))
 
     async def get(self, binding_id: int) -> ChatBinding | None:
@@ -196,6 +212,54 @@ class BindingRepository:
         await self.session.commit()
         return int(result.rowcount or 0)
 
+    async def auto_pause_for_account(self, account_id: int, reason: str | None) -> int:
+        query = select(ChatBinding).where(
+            ChatBinding.account_id == account_id,
+            ChatBinding.auto_paused.is_(False),
+        )
+        bindings = list(await self.session.scalars(query))
+        if not bindings:
+            return 0
+
+        now = utcnow()
+        clean_reason = reason[:256] if reason else None
+        for binding in bindings:
+            binding.auto_paused = True
+            binding.auto_pause_reason = clean_reason
+            binding.auto_paused_at = now
+
+        await self.session.commit()
+        return len(bindings)
+
+    async def resume_auto_paused_for_account(self, account_id: int) -> int:
+        query = select(ChatBinding).where(
+            ChatBinding.account_id == account_id,
+            ChatBinding.auto_paused.is_(True),
+        )
+        bindings = list(await self.session.scalars(query))
+        if not bindings:
+            return 0
+
+        now = utcnow()
+        for binding in bindings:
+            binding.auto_paused = False
+            binding.auto_pause_reason = None
+            binding.auto_paused_at = None
+
+            if binding.is_enabled:
+                minutes = self._schedule_minutes(binding.interval_min_minutes, binding.interval_max_minutes)
+                binding.interval_minutes = minutes
+                binding.next_run_at = now + timedelta(minutes=minutes)
+
+                if binding.reply_interval_min_minutes is None or binding.reply_interval_max_minutes is None:
+                    binding.next_reply_run_at = None
+                else:
+                    reply_minutes = self._schedule_minutes(binding.reply_interval_min_minutes, binding.reply_interval_max_minutes)
+                    binding.next_reply_run_at = now + timedelta(minutes=reply_minutes)
+
+        await self.session.commit()
+        return len(bindings)
+
     async def touch_posted(self, binding: ChatBinding) -> None:
         now = utcnow()
         binding.last_posted_at = now
@@ -255,6 +319,7 @@ class AppSettingsRepository:
         await self.session.delete(setting)
         await self.session.commit()
         return 1
+
 
 class MessageLogRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -342,5 +407,3 @@ class CharacterRepository:
         from sqlalchemy import func
         query = select(func.count(Character.id))
         return await self.session.scalar(query) or 0
-
-

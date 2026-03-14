@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,7 +12,7 @@ class Base(DeclarativeBase):
 
 
 engine = create_async_engine(
-    settings.database_url,
+    settings.resolved_database_url,
     future=True,
     connect_args={"timeout": 30},
 )
@@ -36,7 +36,7 @@ async def get_session() -> AsyncSession:
 
 
 async def ensure_schema() -> None:
-    if not settings.database_url.startswith("sqlite"):
+    if not settings.resolved_database_url.startswith("sqlite"):
         return
 
     async with engine.begin() as connection:
@@ -59,6 +59,9 @@ async def ensure_schema() -> None:
             ("last_reply_posted_at", "ALTER TABLE chat_bindings ADD COLUMN last_reply_posted_at DATETIME NULL"),
             ("next_reply_run_at", "ALTER TABLE chat_bindings ADD COLUMN next_reply_run_at DATETIME NULL"),
             ("last_reply_target_msg_id", "ALTER TABLE chat_bindings ADD COLUMN last_reply_target_msg_id INTEGER NULL"),
+            ("auto_paused", "ALTER TABLE chat_bindings ADD COLUMN auto_paused BOOLEAN NOT NULL DEFAULT 0"),
+            ("auto_pause_reason", "ALTER TABLE chat_bindings ADD COLUMN auto_pause_reason VARCHAR(256) NULL"),
+            ("auto_paused_at", "ALTER TABLE chat_bindings ADD COLUMN auto_paused_at DATETIME NULL"),
         ]
         for column_name, sql in migrations:
             if column_name not in columns:
@@ -89,7 +92,8 @@ async def ensure_schema() -> None:
                 "interval_max_minutes = CASE "
                 "WHEN interval_max_minutes IS NULL OR interval_max_minutes = 10 THEN COALESCE(interval_minutes, 10) "
                 "ELSE interval_max_minutes END, "
-                "context_message_count = COALESCE(context_message_count, 12)"
+                "context_message_count = COALESCE(context_message_count, 12), "
+                "auto_paused = COALESCE(auto_paused, 0)"
             )
         )
 

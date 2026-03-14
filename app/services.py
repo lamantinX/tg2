@@ -18,7 +18,7 @@ audit_logger = logging.getLogger("tg2.audit")
 
 
 def configure_audit_logger() -> None:
-    log_path = Path("data/logs/account_audit.log")
+    log_path = settings.resolved_data_dir / "logs" / "account_audit.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if not audit_logger.handlers:
         handler = logging.FileHandler(log_path, encoding="utf-8")
@@ -29,6 +29,13 @@ def configure_audit_logger() -> None:
 from app.proxy_manager import proxy_manager
 
 class AccountService:
+    _TRANSIENT_HEALTH_ERROR_MARKERS = (
+        "database is locked",
+        "connection to telegram failed",
+        "timeout",
+        "timed out",
+    )
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repo = AccountRepository(session)
@@ -57,6 +64,22 @@ class AccountService:
     async def get_account(self, account_id: int) -> object | None:
         return await self.repo.get(account_id)
 
+    async def list_accounts_for_menu(self) -> list[object]:
+        return await self.repo.list()
+
+    async def ensure_account_name(self, account: object) -> object:
+        if getattr(account, "account_name", None):
+            return account
+        if getattr(account, "auth_status", None) != "authorized" or not bool(getattr(account, "is_active", False)):
+            return account
+
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            return await self._sync_account_name(account, tg)
+        finally:
+            await tg.disconnect()
+
     async def _sync_account_name(self, account: object, tg: TelegramAccountClient) -> object:
         try:
             account_name = await tg.get_account_name()
@@ -71,6 +94,71 @@ class AccountService:
             return account
         return await self.repo.update_profile(account, account_name=account_name)
 
+    async def check_account(self, account_id: int) -> dict[str, object]:
+        account = await self.repo.get(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            status = await tg.check_health()
+            auth_status = str(status["auth_status"])
+            is_active = bool(status["is_active"])
+            reason = str(status["reason"])
+
+            keep_last_known_authorized_state = self._should_keep_last_known_authorized_state(account, auth_status, reason)
+            if keep_last_known_authorized_state:
+                auth_status = "authorized"
+                is_active = True
+                reason = f"transient health check error; kept last known authorized state: {reason}"
+
+            if auth_status == "authorized" and is_active:
+                account = await self._sync_account_name(account, tg)
+
+            account = await self.repo.mark_status(
+                account,
+                auth_status=auth_status,
+                is_active=is_active,
+                touch_last_login=not keep_last_known_authorized_state,
+            )
+        finally:
+            await tg.disconnect()
+
+        paused = 0
+        resumed = 0
+        if not is_active or auth_status != "authorized":
+            paused = await self.binding_repo.auto_pause_for_account(account.id, reason)
+        else:
+            resumed = await self.binding_repo.resume_auto_paused_for_account(account.id)
+
+        return {
+            "account": account,
+            "auth_status": auth_status,
+            "is_active": is_active,
+            "reason": reason,
+            "paused_bindings": paused,
+            "resumed_bindings": resumed,
+        }
+
+    async def delete_account(self, account_id: int) -> dict[str, object]:
+        account = await self.repo.get(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        deleted_bindings = await self.binding_repo.delete_by_account_id(account.id)
+        deleted = bool(await self.repo.delete(account))
+
+        session_file = settings.resolved_data_dir / "sessions" / f"{account.session_name}.session"
+        if session_file.exists():
+            session_file.unlink()
+
+        return {
+            "account_id": account.id,
+            "deleted": deleted,
+            "deleted_bindings": deleted_bindings,
+        }
+
     async def request_login_code(self, account_id: int) -> str:
         account = await self.repo.get(account_id)
         if account is None:
@@ -82,6 +170,7 @@ class AccountService:
             if await tg.is_authorized():
                 await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
+                await self.binding_repo.resume_auto_paused_for_account(account.id)
                 return "already_authorized"
             phone_code_hash = await tg.request_login_code(account.phone)
             await self.repo.update_login_code_hash(account, phone_code_hash)
@@ -108,6 +197,7 @@ class AccountService:
             if status == "authorized":
                 await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
+                await self.binding_repo.resume_auto_paused_for_account(account.id)
             return status
         finally:
             await tg.disconnect()
@@ -126,9 +216,23 @@ class AccountService:
             if status == "authorized":
                 await self._sync_account_name(account, tg)
                 await self.repo.mark_authorized(account)
+                await self.binding_repo.resume_auto_paused_for_account(account.id)
             return status
         finally:
             await tg.disconnect()
+
+    @classmethod
+    def _should_keep_last_known_authorized_state(cls, account: object, auth_status: str, reason: str) -> bool:
+        if auth_status != "error":
+            return False
+        normalized_reason = reason.lower()
+        if not any(marker in normalized_reason for marker in cls._TRANSIENT_HEALTH_ERROR_MARKERS):
+            return False
+
+        previous_auth_status = str(getattr(account, "auth_status", ""))
+        if previous_auth_status == "authorized":
+            return True
+        return previous_auth_status == "error" and getattr(account, "last_login_at", None) is not None
 
     async def audit_accounts(self) -> dict[str, object]:
         accounts = await self.repo.list()
@@ -136,7 +240,8 @@ class AccountService:
             "audited": 0,
             "active": 0,
             "inactive": 0,
-            "cleaned_bindings": 0,
+            "paused_bindings": 0,
+            "resumed_bindings": 0,
             "details": [],
         }
         for account in accounts:
@@ -153,22 +258,38 @@ class AccountService:
             auth_status = str(status["auth_status"])
             is_active = bool(status["is_active"])
             reason = str(status["reason"])
-            await self.repo.mark_status(account, auth_status=auth_status, is_active=is_active)
 
-            cleaned = 0
+            keep_last_known_authorized_state = self._should_keep_last_known_authorized_state(account, auth_status, reason)
+            if keep_last_known_authorized_state:
+                auth_status = "authorized"
+                is_active = True
+                reason = f"transient health check error; kept last known authorized state: {reason}"
+
+            await self.repo.mark_status(
+                account,
+                auth_status=auth_status,
+                is_active=is_active,
+                touch_last_login=not keep_last_known_authorized_state,
+            )
+
+            paused = 0
+            resumed = 0
             if not is_active or auth_status != "authorized":
-                cleaned = await self.binding_repo.delete_by_account_id(account.id)
+                paused = await self.binding_repo.auto_pause_for_account(account.id, reason)
                 report["inactive"] += 1
-                report["cleaned_bindings"] += cleaned
+                report["paused_bindings"] += paused
             else:
+                resumed = await self.binding_repo.resume_auto_paused_for_account(account.id)
                 report["active"] += 1
+                report["resumed_bindings"] += resumed
 
             detail = {
                 "account_id": account.id,
                 "phone": account.phone,
                 "auth_status": auth_status,
                 "is_active": is_active,
-                "cleaned_bindings": cleaned,
+                "paused_bindings": paused,
+                "resumed_bindings": resumed,
                 "reason": reason,
             }
             report["details"].append(detail)
@@ -266,9 +387,18 @@ class BindingService:
             return now
         return last_posted_at + timedelta(minutes=max_minutes)
 
-    def _resolve_state(self, enabled: bool, account_ok: bool, next_run_at: datetime | None, now: datetime) -> str:
+    def _resolve_state(
+        self,
+        enabled: bool,
+        auto_paused: bool,
+        account_ok: bool,
+        next_run_at: datetime | None,
+        now: datetime,
+    ) -> str:
         if not enabled:
             return "disabled"
+        if auto_paused:
+            return "auto_paused"
         if not account_ok:
             return "blocked"
         if next_run_at is None or next_run_at <= now:
@@ -482,6 +612,9 @@ class BindingService:
                     "context_message_count": binding.context_message_count,
                     "system_prompt": binding.system_prompt,
                     "is_enabled": binding.is_enabled,
+                    "auto_paused": getattr(binding, "auto_paused", False),
+                    "auto_pause_reason": getattr(binding, "auto_pause_reason", None),
+                    "auto_paused_at": self._normalize_dt(getattr(binding, "auto_paused_at", None)).isoformat() if getattr(binding, "auto_paused_at", None) else None,
                     "account_active": bool(account and account.is_active),
                     "account_auth_status": getattr(account, "auth_status", "missing"),
                     "last_posted_at": last_posted_at.isoformat() if last_posted_at else None,
@@ -489,8 +622,8 @@ class BindingService:
                     "last_reply_posted_at": last_reply_posted_at.isoformat() if last_reply_posted_at else None,
                     "next_reply_run_at": reply_next_run_at.isoformat() if reply_next_run_at else None,
                     "reply_enabled": reply_enabled,
-                    "reply_state": self._resolve_state(reply_enabled, account_ok, reply_next_run_at, now),
-                    "state": self._resolve_state(binding.is_enabled, account_ok, next_run_at, now),
+                    "reply_state": self._resolve_state(reply_enabled, getattr(binding, "auto_paused", False), account_ok, reply_next_run_at, now),
+                    "state": self._resolve_state(binding.is_enabled, getattr(binding, "auto_paused", False), account_ok, next_run_at, now),
                 }
             )
         return items

@@ -34,7 +34,7 @@ class TelegramAccountClient:
     def __init__(self, session_name: str, proxy_url: str | None = None) -> None:
         self.session_name = session_name
         self.proxy_url = proxy_url
-        self.session_dir = Path("data") / "sessions"
+        self.session_dir = settings.resolved_data_dir / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.session_path = str(self.session_dir / session_name)
         self._client = None

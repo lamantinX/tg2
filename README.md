@@ -29,6 +29,7 @@ pip install -e .
 ```
 
 3. Copy `.env.example` to `.env` and fill in credentials.
+   Relative runtime paths are resolved from the repository root, so the API and bot worker can be started from another working directory as long as `PYTHONPATH` points at the project.
 4. Start the API:
 
 ```bash
@@ -170,8 +171,11 @@ docker-compose down
 
 ### Data Persistence
 
-The project uses a local `./data` directory mapped to `/app/data` inside the containers. This ensures that:
+By default, the project uses a local `./data` directory mapped to `/app/data` inside the containers. You can override it with `DATA_DIR` if you want runtime files somewhere else.
+
+Relative runtime paths are resolved from the repository root, and runtime artifacts are stored under `DATA_DIR`. This covers:
 - SQLite database (`app.db`)
 - Telegram sessions (`sessions/`)
 - Application logs (`logs/`)
-are preserved between container restarts and updates.
+
+With the default settings, these files are preserved between container restarts and updates under `./data`.

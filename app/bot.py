@@ -77,6 +77,24 @@ def main_menu_keyboard ()->InlineKeyboardMarkup :
     return builder .as_markup ()
 
 
+def main_menu_keyboard ()->InlineKeyboardMarkup :
+    builder =InlineKeyboardBuilder ()
+    builder .button (text ='Мастер',callback_data ="menu:wizard")
+    builder .button (text ='Привязать чат',callback_data ="menu:bind_chat_start")
+    builder .button (text ='Инструкция',callback_data ="menu:help")
+    builder .button (text ='Аккаунты',callback_data ="menu:accounts")
+    builder .button (text ='Чаты',callback_data ="menu:chats")
+    builder .button (text ='Проверить аккаунты',callback_data ="menu:audit")
+    builder .button (text ='Проверить прокси',callback_data ="menu:proxy_health")
+    builder .button (text ='Статус отправки',callback_data ="menu:status")
+    builder .button (text ='Перезапустить задачи',callback_data ="menu:restart_runners")
+    builder .button (text ='Основной промпт',callback_data ="menu:main_prompt")
+    builder .button (text ='Модель',callback_data ="menu:model")
+    builder .button (text ='Вернуться в начало',callback_data ="menu:back")
+    builder .adjust (2 ,2 ,2 ,2 ,2 ,1 )
+    return builder .as_markup ()
+
+
 def main_prompt_keyboard ()->InlineKeyboardMarkup :
     builder =InlineKeyboardBuilder ()
     builder .button (text ="РР·РјРµРЅРёС‚СЊ РѕСЃРЅРѕРІРЅРѕР№ РїСЂРѕРјРїС‚",callback_data ="menu:main_prompt:set")
@@ -400,6 +418,18 @@ def build_bot ()->tuple [Bot ,Dispatcher ]:
         await set_bot_commands ()
 
     async def send_main_menu (target :Message |CallbackQuery ,text :str ='Главное меню')->None :
+        if isinstance (target ,CallbackQuery ):
+            await target .message .answer (text ,reply_markup =main_menu_keyboard ())
+            await target .answer ()
+            return 
+        await target .answer (text ,reply_markup =main_menu_keyboard ())
+
+    async def send_main_menu (target :Message |CallbackQuery ,text :str ='Главное меню')->None :
+        if '/wizard.'in text and 'Р'in text :
+            text ='Главное меню. Используй кнопки ниже или команду /wizard.'
+        elif text =='Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ':
+            text ='Главное меню'
+
         if isinstance (target ,CallbackQuery ):
             await target .message .answer (text ,reply_markup =main_menu_keyboard ())
             await target .answer ()

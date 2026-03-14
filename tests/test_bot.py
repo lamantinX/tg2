@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ from app.bot import (
     _account_button_text,
     _binding_button_text,
     binding_settings_keyboard,
+    build_bot,
     format_account_details,
     format_audit_report,
     format_binding_settings,
@@ -143,8 +145,38 @@ class AccountPresentationTests(unittest.TestCase):
         labels = [button.text for row in keyboard.inline_keyboard for button in row]
 
         self.assertIn("Мастер", labels)
+        self.assertIn("Инструкция", labels)
         self.assertIn("Аккаунты", labels)
         self.assertIn("Проверить прокси", labels)
+
+    def test_start_handler_sends_human_readable_menu_text(self) -> None:
+        _, dispatcher = build_bot()
+        start_handler = next(
+            handler.callback
+            for handler in dispatcher.message.handlers
+            if handler.callback.__name__ == "start_handler"
+        )
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            async def answer(self, text: str, reply_markup=None):
+                self.calls.append((text, reply_markup))
+
+        class FakeState:
+            async def clear(self) -> None:
+                return None
+
+        message = FakeMessage()
+        asyncio.run(start_handler(message, FakeState()))
+
+        self.assertEqual(len(message.calls), 1)
+        text, _ = message.calls[0]
+        self.assertEqual(
+            text,
+            "Главное меню. Используй кнопки ниже или команду /wizard.",
+        )
 
 
 if __name__ == "__main__":

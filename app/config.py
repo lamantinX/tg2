@@ -18,9 +18,17 @@ def _sqlite_url_to_absolute(url: str, base_dir: Path) -> str:
     prefixes = ("sqlite+aiosqlite:///", "sqlite:///")
     prefix = next((item for item in prefixes if url.startswith(item)), None)
     if prefix is None:
-        return url
+        malformed_prefixes = ("sqlite+aiosqlite://", "sqlite://")
+        malformed_prefix = next((item for item in malformed_prefixes if url.startswith(item)), None)
+        if malformed_prefix is None:
+            return url
+        raw_path = url[len(malformed_prefix):]
+        prefix = f"{malformed_prefix}/"
+    else:
+        raw_path = url[len(prefix):]
 
-    raw_path = url[len(prefix):]
+    if not raw_path:
+        return url
     if raw_path == ":memory:":
         return url
 

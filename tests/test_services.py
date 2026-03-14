@@ -409,6 +409,13 @@ class SettingsPathTests(unittest.TestCase):
         self.assertTrue(result.startswith("sqlite+aiosqlite:///"))
         self.assertTrue(result.endswith("/data/app.db"))
 
+    def test_sqlite_relative_url_with_missing_slash_is_normalized(self) -> None:
+        base_dir = Path.cwd()
+        result = _sqlite_url_to_absolute("sqlite+aiosqlite://app/data/app.db", base_dir)
+
+        self.assertTrue(result.startswith("sqlite+aiosqlite:///"))
+        self.assertTrue(result.endswith("/app/data/app.db"))
+
     def test_resolved_data_dir_is_absolute(self) -> None:
         self.assertTrue(settings.resolved_data_dir.is_absolute())
 

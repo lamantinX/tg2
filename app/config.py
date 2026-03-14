@@ -37,9 +37,7 @@ def _sqlite_url_to_absolute(url: str, base_dir: Path) -> str:
         path = (base_dir / path).resolve()
 
     posix_path = path.as_posix()
-    if path.drive:
-        return f"{prefix}{posix_path}"
-    return f"{prefix.rstrip('/')}/{posix_path}"
+    return f"{prefix}{posix_path}"
 
 
 class Settings(BaseSettings):

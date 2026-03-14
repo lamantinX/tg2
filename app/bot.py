@@ -119,6 +119,7 @@ def binding_settings_keyboard (binding_id :int )->InlineKeyboardMarkup :
     builder .button (text ='Задать интервал',callback_data =f"binding:set_interval:{binding_id }")
     builder .button (text ="РРЅС‚РµСЂРІР°Р» РѕС‚РІРµС‚РѕРІ",callback_data =f"binding:set_reply_interval:{binding_id }")
     builder .button (text ='Количество сообщений',callback_data =f"binding:set_context:{binding_id }")
+    builder .button (text ='Сгенерировать и отправить сообщение',callback_data =f"binding:send_once:{binding_id }")
     builder .button (text ='Удалить привязку',callback_data =f"binding:delete:{binding_id }")
     builder .button (text ='Назад к чатам',callback_data ="menu:chats")
     builder .button (text ='Вернуться в начало',callback_data ="menu:back")
@@ -741,7 +742,7 @@ def build_bot ()->tuple [Bot ,Dispatcher ]:
             return 
         async with SessionLocal ()as session :
             try :
-                content =await ChatAutomationService (session ).generate_and_send (account_id =int (parts [1 ]),chat_ref =parts [2 ].strip ())
+                content =await ChatAutomationService (session ).force_generate_and_send (account_id =int (parts [1 ]),chat_ref =parts [2 ].strip ())
                 await message .answer (content ,reply_markup =main_menu_keyboard ())
             except ValueError as exc :
                 await message .answer (f"Ошибка: {exc }",reply_markup =back_keyboard ())
@@ -1056,6 +1057,26 @@ def build_bot ()->tuple [Bot ,Dispatcher ]:
                 await callback .message .answer (format_binding_settings (binding ),reply_markup =binding_settings_keyboard (binding_id ))
             except ValueError as exc :
                 await callback .message .answer (f"Ошибка: {exc }",reply_markup =back_keyboard ())
+        await callback .answer ()
+
+    @dp .callback_query (F .data .startswith ("binding:send_once:"))
+    async def callback_binding_send_once (callback :CallbackQuery )->None :
+        binding_id =int ((callback .data or "").split (":")[-1 ])
+        async with SessionLocal ()as session :
+            try :
+                binding_service =BindingService (session )
+                automation_service =ChatAutomationService (session )
+                binding =await binding_service .get_binding (binding_id )
+                content =await automation_service .force_generate_and_send_binding (binding )
+                refreshed_binding =await binding_service .get_binding (binding_id )
+                notice =f"Сообщение отправлено:\n\n{content }"if content else "Не удалось сгенерировать сообщение."
+                await callback .message .answer (
+                f"{notice }\n\n{format_binding_settings (refreshed_binding )}",
+                reply_markup =binding_settings_keyboard (binding_id ),
+                parse_mode =None ,
+                )
+            except ValueError as exc :
+                await callback .message .answer (f"Ошибка: {exc }",reply_markup =back_keyboard (),parse_mode =None )
         await callback .answer ()
 
     @dp .callback_query (F .data .startswith ("binding:set_prompt:"))

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 from app.ai import DEFAULT_MAIN_SYSTEM_PROMPT
 from app.config import Settings, _sqlite_url_to_absolute, settings
-from app.services import AccountService, AppSettingsService, BindingService
+from app.services import AccountService, AppSettingsService, BindingService, ChatAutomationService
 
 
 class AccountServiceLogicTests(unittest.IsolatedAsyncioTestCase):
@@ -339,6 +339,103 @@ class BindingServiceLogicTests(unittest.TestCase):
         self.assertEqual(state, "auto_paused")
 
 
+class ChatAutomationServiceLogicTests(unittest.IsolatedAsyncioTestCase):
+    async def test_force_generate_and_send_binding_bypasses_decision_engine(self) -> None:
+        binding = SimpleNamespace(
+            id=9,
+            account_id=1,
+            chat_ref="@room",
+            context_message_count=5,
+            system_prompt="Stay concise",
+        )
+        account = SimpleNamespace(
+            id=1,
+            session_name="100",
+            proxy_url=None,
+            auth_status="authorized",
+            is_active=True,
+            character=None,
+        )
+        tg = SimpleNamespace(
+            check_chat_membership=AsyncMock(return_value=True),
+            fetch_recent_messages=AsyncMock(return_value=[{"sender": "alice", "text": "hi", "date": datetime.now(timezone.utc)}]),
+            send_message=AsyncMock(return_value=777),
+            disconnect=AsyncMock(),
+        )
+
+        service = ChatAutomationService.__new__(ChatAutomationService)
+        service.session = object()
+        service.account_repo = SimpleNamespace(get=AsyncMock(return_value=account))
+        service.binding_repo = SimpleNamespace(
+            get=AsyncMock(return_value=binding),
+            touch_posted=AsyncMock(),
+        )
+        service.message_log_repo = SimpleNamespace(add=AsyncMock())
+        service.app_settings = SimpleNamespace(
+            get_main_system_prompt=AsyncMock(return_value="main prompt"),
+            get_effective_openai_model=AsyncMock(return_value="gpt-5-mini"),
+        )
+        service.ai = SimpleNamespace(generate_reply=AsyncMock(return_value="hello there"))
+
+        with patch("app.services.proxy_manager.get_proxy_for_account", AsyncMock(return_value=None)), patch(
+            "app.services.TelegramAccountClient", return_value=tg
+        ), patch(
+            "app.services.decision_engine.decide",
+            side_effect=AssertionError("decision engine must not be used for force send"),
+        ):
+            result = await ChatAutomationService.generate_and_send_binding(service, binding, force=True)
+
+        self.assertEqual(result, "hello there")
+        tg.send_message.assert_awaited_once_with("@room", "hello there")
+        service.message_log_repo.add.assert_awaited_once_with(
+            account_id=1,
+            chat_ref="@room",
+            content="hello there",
+            msg_id=777,
+        )
+        service.binding_repo.touch_posted.assert_awaited_once_with(binding)
+
+    async def test_force_generate_and_send_retries_message_log_on_transient_lock(self) -> None:
+        account = SimpleNamespace(
+            id=1,
+            session_name="100",
+            proxy_url=None,
+            auth_status="authorized",
+            is_active=True,
+            character=None,
+        )
+        service = ChatAutomationService.__new__(ChatAutomationService)
+        service.session = object()
+        service.account_repo = SimpleNamespace(get=AsyncMock(return_value=account))
+        service.binding_repo = SimpleNamespace()
+        service.app_settings = SimpleNamespace(
+            get_main_system_prompt=AsyncMock(return_value="main prompt"),
+            get_effective_openai_model=AsyncMock(return_value="gpt-5-mini"),
+        )
+        service.ai = SimpleNamespace(generate_reply=AsyncMock(return_value="hello there"))
+        service.message_log_repo = SimpleNamespace(
+            add=AsyncMock(side_effect=[RuntimeError("database is locked"), None]),
+        )
+        tg = SimpleNamespace(
+            check_chat_membership=AsyncMock(return_value=True),
+            fetch_recent_messages=AsyncMock(return_value=[]),
+            send_message=AsyncMock(return_value=555),
+            disconnect=AsyncMock(),
+        )
+
+        with patch("app.services.proxy_manager.get_proxy_for_account", AsyncMock(return_value=None)), patch(
+            "app.services.TelegramAccountClient", return_value=tg
+        ), patch("app.services.asyncio.sleep", AsyncMock()):
+            result = await ChatAutomationService.force_generate_and_send(
+                service,
+                account_id=1,
+                chat_ref="@room",
+            )
+
+        self.assertEqual(result, "hello there")
+        self.assertEqual(service.message_log_repo.add.await_count, 2)
+
+
 class InMemoryAppSettingsRepo:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -415,6 +512,19 @@ class SettingsPathTests(unittest.TestCase):
 
         self.assertTrue(result.startswith("sqlite+aiosqlite:///"))
         self.assertTrue(result.endswith("/app/data/app.db"))
+
+    def test_sqlite_absolute_posix_url_keeps_required_slashes(self) -> None:
+        base_dir = Path.cwd()
+        posix_path = SimpleNamespace(
+            is_absolute=lambda: True,
+            resolve=lambda: Path("/ignored"),
+            as_posix=lambda: "/app/data/app.db",
+            drive="",
+        )
+        with patch("app.config.Path", return_value=posix_path):
+            result = _sqlite_url_to_absolute("sqlite+aiosqlite:////app/data/app.db", base_dir)
+
+        self.assertEqual(result, "sqlite+aiosqlite:////app/data/app.db")
 
     def test_resolved_data_dir_is_absolute(self) -> None:
         self.assertTrue(settings.resolved_data_dir.is_absolute())

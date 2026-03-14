@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.bot import (
     _account_button_text,
     _binding_button_text,
+    binding_settings_keyboard,
     format_account_details,
     format_audit_report,
     format_binding_settings,
@@ -55,6 +56,12 @@ class BindingPresentationTests(unittest.TestCase):
         self.assertIn("chat_ref=-100123", text)
         self.assertIn("auto_paused=1", text)
         self.assertIn("auto_pause_reason=session revoked", text)
+
+    def test_binding_settings_keyboard_includes_force_send_action(self) -> None:
+        keyboard = binding_settings_keyboard(8)
+        labels = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("Сгенерировать и отправить сообщение", labels)
 
     def test_audit_report_uses_pause_and_resume_counters(self) -> None:
         text = format_audit_report(

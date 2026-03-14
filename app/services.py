@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -720,6 +721,8 @@ class AppSettingsService:
 
 class ChatAutomationService:
     RECENT_REPLY_WINDOW = 10
+    _DB_LOCK_RETRY_ATTEMPTS = 3
+    _DB_LOCK_RETRY_DELAY_SECONDS = 0.5
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -758,6 +761,75 @@ class ChatAutomationService:
                 candidates = filtered
         import random
         return random.choice(candidates)
+
+    @staticmethod
+    def _is_transient_db_lock_error(exc: Exception) -> bool:
+        return "database is locked" in str(exc).lower()
+
+    async def _run_with_db_lock_retry(self, operation) -> None:
+        last_exc: Exception | None = None
+        for attempt in range(1, self._DB_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                await operation()
+                return
+            except Exception as exc:
+                if not self._is_transient_db_lock_error(exc) or attempt >= self._DB_LOCK_RETRY_ATTEMPTS:
+                    raise
+                last_exc = exc
+                await asyncio.sleep(self._DB_LOCK_RETRY_DELAY_SECONDS)
+        if last_exc is not None:
+            raise last_exc
+
+    async def force_generate_and_send(
+        self,
+        account_id: int,
+        chat_ref: str,
+        context_message_count: int = 12,
+        system_prompt: str | None = None,
+    ) -> str:
+        account = await self.account_repo.get(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+        if account.auth_status != "authorized" or not account.is_active:
+            raise ValueError(f"Account {account_id} is not active and authorized")
+
+        proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
+        main_system_prompt = await self.app_settings.get_main_system_prompt()
+        model = await self.app_settings.get_effective_openai_model()
+
+        tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
+        try:
+            try:
+                if not await tg.check_chat_membership(chat_ref):
+                    chat_ref = await tg.join_chat(chat_ref)
+            except Exception as e:
+                logging.getLogger("tg2.services").warning("Auto-join failed for %s: %s", chat_ref, e)
+
+            context = await tg.fetch_recent_messages(chat_ref, limit=context_message_count)
+            content = await self.ai.generate_reply(
+                chat_ref=chat_ref,
+                context_messages=context,
+                system_prompt=system_prompt,
+                main_system_prompt=main_system_prompt,
+                model=model,
+                reaction_type="message",
+                character=getattr(account, "character", None),
+            )
+            if not content:
+                return ""
+
+            msg_id = await tg.send_message(chat_ref, content)
+            await self._run_with_db_lock_retry(
+                lambda: self.message_log_repo.add(
+                    account_id=account_id,
+                    chat_ref=chat_ref,
+                    content=content,
+                    msg_id=msg_id,
+                )
+            )
+            return content
+        finally:
+            await tg.disconnect()
 
     async def generate_and_send(
         self,
@@ -819,7 +891,9 @@ class ChatAutomationService:
         finally:
             await tg.disconnect()
 
-    async def generate_and_send_binding(self, binding: object) -> str:
+    async def generate_and_send_binding(self, binding: object, force: bool = False) -> str:
+        if force:
+            return await self.force_generate_and_send_binding(binding)
         last_bot_post_at = getattr(binding, "last_posted_at", None)
         if last_bot_post_at is not None and last_bot_post_at.tzinfo is None:
             last_bot_post_at = last_bot_post_at.replace(tzinfo=timezone.utc)
@@ -830,6 +904,17 @@ class ChatAutomationService:
             system_prompt=binding.system_prompt,
             last_bot_post_at=last_bot_post_at,
         )
+
+    async def force_generate_and_send_binding(self, binding: object) -> str:
+        content = await self.force_generate_and_send(
+            account_id=binding.account_id,
+            chat_ref=binding.chat_ref,
+            context_message_count=binding.context_message_count,
+            system_prompt=binding.system_prompt,
+        )
+        if content:
+            await self._run_with_db_lock_retry(lambda: self.binding_repo.touch_posted(binding))
+        return content
 
     async def generate_and_send_recent_reply(self, binding: object) -> tuple[str, int] | None:
         account = await self.account_repo.get(binding.account_id)

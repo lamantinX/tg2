@@ -29,6 +29,10 @@ class AccountRepository:
         query = select(TelegramAccount).where(TelegramAccount.phone == phone).options(selectinload(TelegramAccount.character))
         return await self.session.scalar(query)
 
+    async def get_by_session_name(self, session_name: str) -> TelegramAccount | None:
+        query = select(TelegramAccount).where(TelegramAccount.session_name == session_name).options(selectinload(TelegramAccount.character))
+        return await self.session.scalar(query)
+
     async def list(self) -> list[TelegramAccount]:
         query = select(TelegramAccount).order_by(TelegramAccount.id.desc()).options(selectinload(TelegramAccount.character))
         return list(await self.session.scalars(query))

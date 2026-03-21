@@ -1317,6 +1317,9 @@ def build_bot ()->tuple [Bot ,Dispatcher ]:
                 )
             except ValueError as exc :
                 await message .answer (f"Ошибка: {exc }",reply_markup =back_keyboard ())
+            except Exception as exc :
+                logging .getLogger ("tg2.bot").exception ("wizard_proxy error")
+                await message .answer ("Ошибка при создании аккаунта. Возможно, этот номер уже добавлен.",reply_markup =back_keyboard ())
 
     @dp .message (WizardStates .waiting_code )
     async def wizard_code (message :Message ,state :FSMContext )->None :

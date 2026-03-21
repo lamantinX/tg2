@@ -9,6 +9,12 @@ from telethon.errors import (
     ChannelPrivateError, UserAlreadyParticipantError,
     InviteHashExpiredError, InviteHashInvalidError
 )
+
+try:
+    from telethon.errors import AuthKeyDuplicatedError
+except ImportError:  # pragma: no cover
+    AuthKeyDuplicatedError = Exception
+
 from telethon.tl.functions.channels import CreateChannelRequest, JoinChannelRequest, UpdateUsernameRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 
@@ -87,6 +93,24 @@ class TelegramAccountClient:
         
         self._is_disconnected = True
 
+    async def _invalidate_session(self) -> None:
+        """Remove the session from registry and delete the .session file."""
+        logger.warning("Invalidating session %s due to AuthKeyDuplicatedError", self.session_name)
+        async with _registry_lock:
+            client_to_close = _client_registry.pop(self.session_path, None)
+            _client_ref_counts.pop(self.session_path, None)
+            if client_to_close:
+                try:
+                    await asyncio.wait_for(client_to_close.disconnect(), timeout=5.0)
+                except Exception:
+                    pass
+        session_file = Path(f"{self.session_path}.session")
+        if session_file.exists():
+            session_file.unlink()
+            logger.info("Deleted invalidated session file: %s", session_file)
+        self._client = None
+        self._is_disconnected = True
+
     async def is_authorized(self) -> bool:
         client = await self.connect()
         result = await client.is_user_authorized()
@@ -104,6 +128,9 @@ class TelegramAccountClient:
             return {"is_active": True, "auth_status": "authorized", "reason": "ok"}
         except (AuthKeyUnregisteredError, SessionRevokedError):
             return {"is_active": False, "auth_status": "revoked", "reason": "session revoked"}
+        except AuthKeyDuplicatedError:
+            await self._invalidate_session()
+            return {"is_active": False, "auth_status": "revoked", "reason": "сессия использовалась с двух IP одновременно, требуется повторная авторизация"}
         except (UserDeactivatedBanError, UserDeactivatedError):
             return {"is_active": False, "auth_status": "banned", "reason": "account deactivated or banned"}
         except Exception as exc:
@@ -131,7 +158,7 @@ class TelegramAccountClient:
         return "authorized"
 
     async def _resolve_sender_name(self, message) -> str:
-        sender_name = "Р В Р в‚¬Р РЋРІР‚РЋР В Р’В°Р РЋР С“Р РЋРІР‚С™Р В Р вЂ¦Р В РЎвЂР В РЎвЂќ"
+        sender_name = "Неизвестный"
         try:
             sender = await message.get_sender()
             if sender:
@@ -152,7 +179,7 @@ class TelegramAccountClient:
         client = await self.connect()
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         messages = []
-        # ?????????????????? ?? ?????????????????????? ??????????????, ?????????? ?????????????? ???????????? ??????-???? ?????????? ??????????????????
+        # Пропускаем свои сообщения, чтобы собрать нужное кол-во от других
         fetched_total = 0
         async for message in client.iter_messages(entity, limit=limit * 3):
             if message.message and not message.out:
@@ -170,7 +197,7 @@ class TelegramAccountClient:
         messages = []
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         async for message in client.iter_messages(entity, limit=limit):
-            # ???????????????????? ?????????????????????? ?????????????????? ????????
+            # Пропускаем свои сообщения, чтобы собрать нужное кол-во от других
             if message.message and not message.out:
                 sender_name = await self._resolve_sender_name(message)
                 messages.append({
@@ -220,27 +247,27 @@ class TelegramAccountClient:
         return self._resolve_entity_name(me)
 
     async def check_chat_membership(self, chat_ref: str) -> bool:
-        """Р В РІР‚в„ўР В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР РЋРІР‚С™ True, Р В Р’ВµР РЋР С“Р В Р’В»Р В РЎвЂ Р В Р’В°Р В РЎвЂќР В РЎвЂќР В Р’В°Р РЋРЎвЂњР В Р вЂ¦Р РЋРІР‚С™ Р РЋРЎвЂњР В Р’В¶Р В Р’Вµ Р РЋР С“Р В РЎвЂўР РЋР С“Р РЋРІР‚С™Р В РЎвЂўР В РЎвЂР РЋРІР‚С™ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™Р В Р’Вµ."""
-        # Р В РІР‚СњР В Р’В»Р РЋР РЏ Р РЋР С“Р РЋР С“Р РЋРІР‚в„–Р В Р’В»Р В РЎвЂўР В РЎвЂќ-Р В РЎвЂ”Р РЋР вЂљР В РЎвЂР В РЎвЂ“Р В Р’В»Р В Р’В°Р РЋРІвЂљВ¬Р В Р’ВµР В Р вЂ¦Р В РЎвЂР В РІвЂћвЂ“ Р В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В РЎвЂ”Р РЋРЎвЂњР РЋР С“Р В РЎвЂќР В Р’В°Р В Р’ВµР В РЎВ Р В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В Р вЂ Р В Р’ВµР РЋР вЂљР В РЎвЂќР РЋРЎвЂњ Р В РЎвЂ Р РЋР С“Р РЋР вЂљР В Р’В°Р В Р’В·Р РЋРЎвЂњ Р В РЎвЂР В РўвЂР В Р’ВµР В РЎВ Р В Р вЂ  join (Р В РЎвЂўР В Р вЂ¦ Р РЋР С“Р В Р’В°Р В РЎВ Р РЋР вЂљР В Р’В°Р В Р’В·Р В Р’В±Р В Р’ВµР РЋР вЂљР В Р’ВµР РЋРІР‚С™Р РЋР С“Р РЋР РЏ)
+        """Возвращает True, если аккаунт уже состоит в чате."""
+        # Для инвайт-ссылок проверка членства невозможна (их надо разобрать в join)
         if "t.me/" in chat_ref or chat_ref.strip().startswith("+"):
             return False
 
         client = await self.connect()
         entity = int(chat_ref) if chat_ref.lstrip('-').isdigit() else chat_ref
         try:
-            # get_permissions Р В Р’В±Р РЋР вЂљР В РЎвЂўР РЋР С“Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В РЎвЂР РЋР С“Р В РЎвЂќР В Р’В»Р РЋР вЂ№Р РЋРІР‚РЋР В Р’ВµР В Р вЂ¦Р В РЎвЂР В Р’Вµ, Р В Р’ВµР РЋР С“Р В Р’В»Р В РЎвЂ Р В РЎВР РЋРІР‚в„– Р В Р вЂ¦Р В Р’Вµ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™Р В Р’Вµ
+            # get_permissions бросает исключение, если не в чате
             await client.get_permissions(entity, 'me')
             return True
         except Exception:
             return False
 
     async def join_chat(self, chat_ref: str) -> str:
-        """Р В РІР‚в„ўР РЋР С“Р РЋРІР‚С™Р РЋРЎвЂњР В РЎвЂ”Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™ Р В РЎвЂ Р В Р вЂ Р В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР РЋРІР‚С™ Р В Р вЂ¦Р В РЎвЂўР РЋР вЂљР В РЎВР В Р’В°Р В Р’В»Р В РЎвЂР В Р’В·Р В РЎвЂўР В Р вЂ Р В Р’В°Р В Р вЂ¦Р В Р вЂ¦Р РЋРІР‚в„–Р В РІвЂћвЂ“ chat_ref (username Р В РЎвЂР В Р’В»Р В РЎвЂ ID)."""
+        """Вступает в чат и возвращает нормализованный chat_ref (username или ID)."""
         logger.info("join_chat session=%s chat_ref=%s", self.session_name, chat_ref)
         client = await self.connect()
         raw = chat_ref.strip()
         
-        # 1. Р В Р’ВР В Р вЂ¦Р В Р вЂ Р В Р’В°Р В РІвЂћвЂ“Р РЋРІР‚С™-Р РЋР С“Р РЋР С“Р РЋРІР‚в„–Р В Р’В»Р В РЎвЂќР В РЎвЂ t.me/+HASH Р В РЎвЂР В Р’В»Р В РЎвЂ +HASH
+        # 1. Инвайт-ссылки t.me/+HASH или +HASH
         invite_hash = None
         if "t.me/+" in raw or "t.me/joinchat/" in raw:
             invite_hash = raw.split("/")[-1].replace("+", "")
@@ -255,7 +282,7 @@ class TelegramAccountClient:
                     res = getattr(chat, "username", None) or f"-100{chat.id}"
                     logger.info("join_chat via invite ok session=%s result=%s", self.session_name, res)
                     return res
-                # Р В РІР‚СћР РЋР С“Р В Р’В»Р В РЎвЂ Р В Р вЂ Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р РЋРЎвЂњР В Р’В»Р В РЎвЂў Р В Р вЂ¦Р В Р’Вµ Updates (Р РЋР вЂљР В Р’ВµР В РўвЂР В РЎвЂќР В РЎвЂў), Р В РЎвЂ”Р В РЎвЂўР В РЎвЂ”Р РЋР вЂљР В РЎвЂўР В Р’В±Р РЋРЎвЂњР В Р’ВµР В РЎВ CheckChatInviteRequest
+                # Если вернулось не Updates (редко), попробуем CheckChatInviteRequest
                 invite = await client(CheckChatInviteRequest(invite_hash))
                 chat = invite.chat
                 res = getattr(chat, "username", None) or f"-100{chat.id}"
@@ -270,7 +297,7 @@ class TelegramAccountClient:
                 logger.error("Failed to join via invite hash %s: %s", invite_hash, e)
                 raise
 
-        # 2. Р В РЎвЂєР В Р’В±Р РЋРІР‚в„–Р РЋРІР‚РЋР В Р вЂ¦Р РЋРІР‚в„–Р В РІвЂћвЂ“ ID Р В РЎвЂР В Р’В»Р В РЎвЂ Р РЋР вЂ№Р В Р’В·Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р В Р’ВµР В РІвЂћвЂ“Р В РЎВ
+        # 2. Обычный ID или юзернейм
         entity = int(raw) if raw.lstrip('-').isdigit() else raw
         try:
             entity_obj = await client.get_entity(entity)
@@ -298,7 +325,7 @@ class TelegramAccountClient:
         client = await self.connect()
         result = await client(CreateChannelRequest(title=title, about=about, megagroup=True))
         chat = result.chats[0]
-        # Р В РІР‚СњР В Р’В°Р РЋРІР‚ВР В РЎВ Telegram 10 Р РЋР С“Р В Р’ВµР В РЎвЂќР РЋРЎвЂњР В Р вЂ¦Р В РўвЂ Р В Р вЂ¦Р В Р’В° Р РЋР вЂљР В Р’ВµР В РЎвЂ“Р В РЎвЂР РЋР С“Р РЋРІР‚С™Р РЋР вЂљР В Р’В°Р РЋРІР‚В Р В РЎвЂР РЋР вЂ№ Р В РЎвЂ“Р РЋР вЂљР РЋРЎвЂњР В РЎвЂ”Р В РЎвЂ”Р РЋРІР‚в„– Р В РЎвЂ”Р В Р’ВµР РЋР вЂљР В Р’ВµР В РўвЂ Р РЋР вЂљР В Р’ВµР В РўвЂР В Р’В°Р В РЎвЂќР РЋРІР‚С™Р В РЎвЂР РЋР вЂљР В РЎвЂўР В Р вЂ Р В Р’В°Р В Р вЂ¦Р В РЎвЂР В Р’ВµР В РЎВ
+        # Даём Telegram 10 секунд на регистрацию группы
         await asyncio.sleep(10)
         if username:
             await client(UpdateUsernameRequest(channel=chat, username=username))
@@ -307,6 +334,6 @@ class TelegramAccountClient:
 
         chat_ref = getattr(chat, "username", None) or f"-100{chat.id}"
         logger.info("create_group ok session=%s chat_ref=%s", self.session_name, chat_ref)
-        # Р В РІР‚СћР РЋР С“Р В Р’В»Р В РЎвЂ Р РЋР вЂ№Р В Р’В·Р В Р’ВµР РЋР вЂљР В Р вЂ¦Р В Р’ВµР В РІвЂћвЂ“Р В РЎВР В Р’В° Р В Р вЂ¦Р В Р’ВµР РЋРІР‚С™, Р В Р вЂ Р В РЎвЂўР В Р’В·Р В Р вЂ Р РЋР вЂљР В Р’В°Р РЋРІР‚В°Р В Р’В°Р В Р’ВµР В РЎВ ID Р РЋР С“ Р В РЎвЂ”Р РЋР вЂљР В Р’ВµР РЋРІР‚С›Р В РЎвЂР В РЎвЂќР РЋР С“Р В РЎвЂўР В РЎВ -100 Р В РўвЂР В Р’В»Р РЋР РЏ Р В РЎвЂќР В РЎвЂўР РЋР вЂљР РЋР вЂљР В Р’ВµР В РЎвЂќР РЋРІР‚С™Р В Р вЂ¦Р В РЎвЂўР В РІвЂћвЂ“ Р РЋР вЂљР В Р’В°Р В Р’В±Р В РЎвЂўР РЋРІР‚С™Р РЋРІР‚в„– Telethon
+        # Если юзернейма нет, возвращаем ID с префиксом -100 для корректной работы Telethon
         return chat_ref
 

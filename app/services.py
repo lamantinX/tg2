@@ -11,7 +11,7 @@ from app.ai import AIService, DEFAULT_MAIN_SYSTEM_PROMPT
 from app.config import settings
 from app.decision_engine import DecisionContext, decision_engine
 from app.repositories import AccountRepository, AppSettingsRepository, BindingRepository, CharacterRepository, MessageLogRepository, ReplyTaskRepository
-from app.telegram_client import TelegramAccountClient
+from app.telegram_client import TelegramAccountClient, AuthKeyDuplicatedError
 from app.character_engine import DEFAULT_CHARACTERS
 
 
@@ -48,7 +48,10 @@ class AccountService:
         if existing:
             return existing
         session_name = phone.replace("+", "").replace(" ", "")
-        
+        existing_by_session = await self.repo.get_by_session_name(session_name)
+        if existing_by_session:
+            return existing_by_session
+
         # Assign a random character if available
         char_repo = CharacterRepository(self.session)
         chars = await char_repo.list()
@@ -56,7 +59,7 @@ class AccountService:
         if chars:
             import random
             character_id = random.choice(chars).id
-            
+
         return await self.repo.create(phone=phone, session_name=session_name, proxy_url=proxy_url, character_id=character_id)
 
     async def list_accounts(self) -> list[object]:
@@ -247,7 +250,7 @@ class AccountService:
         }
         for account in accounts:
             report["audited"] += 1
-            # Р В Р’В Р РЋРЎСџР В Р’В Р РЋРІР‚СћР В Р’В Р вЂ™Р’В»Р В Р Р‹Р РЋРІР‚СљР В Р Р‹Р Р†Р вЂљР Р‹Р В Р’В Р вЂ™Р’В°Р В Р’В Р вЂ™Р’ВµР В Р’В Р РЋР’В/Р В Р’В Р РЋРІР‚СћР В Р’В Р вЂ™Р’В±Р В Р’В Р В РІР‚В¦Р В Р’В Р РЋРІР‚СћР В Р’В Р В РІР‚В Р В Р’В Р вЂ™Р’В»Р В Р Р‹Р В Р РЏР В Р’В Р вЂ™Р’ВµР В Р’В Р РЋР’В Р В Р’В Р РЋРІР‚вЂќР В Р Р‹Р В РІР‚С™Р В Р’В Р РЋРІР‚СћР В Р’В Р РЋРІР‚СњР В Р Р‹Р В РЎвЂњР В Р’В Р РЋРІР‚В Р В Р Р‹Р Р†Р вЂљР Р‹Р В Р’В Р вЂ™Р’ВµР В Р Р‹Р В РІР‚С™Р В Р’В Р вЂ™Р’ВµР В Р’В Р вЂ™Р’В· Р В Р’В Р РЋР’ВР В Р’В Р вЂ™Р’ВµР В Р’В Р В РІР‚В¦Р В Р’В Р вЂ™Р’ВµР В Р’В Р СћРІР‚ВР В Р’В Р вЂ™Р’В¶Р В Р’В Р вЂ™Р’ВµР В Р Р‹Р В РІР‚С™
+            # Пропускаем выключенные/деактивированные без перепроверки
             proxy_url = await proxy_manager.get_proxy_for_account(account.id, self.session)
 
             tg = TelegramAccountClient(session_name=account.session_name, proxy_url=proxy_url or account.proxy_url)
@@ -504,8 +507,16 @@ class BindingService:
                     chat_ref,
                     exc,
                 )
+        except AuthKeyDuplicatedError:
+            await tg._invalidate_session()
+            await self.account_repo.mark_status(account, auth_status="revoked", is_active=False)
+            await self.repo.auto_pause_for_account(account.id, "сессия недействительна")
+            raise ValueError(
+                f"Сессия аккаунта использовалась с двух IP одновременно и стала недействительной. "
+                f"Требуется повторная авторизация (Аккаунты → Проверить)."
+            )
         except Exception as exc:
-            raise ValueError(f"Р В РЎСљР В Р’Вµ Р РЋРЎвЂњР В РўвЂР В Р’В°Р В Р’В»Р В РЎвЂўР РЋР С“Р РЋР Р‰ Р В Р вЂ Р РЋР С“Р РЋРІР‚С™Р РЋРЎвЂњР В РЎвЂ”Р В РЎвЂР РЋРІР‚С™Р РЋР Р‰ Р В Р вЂ  Р РЋРІР‚РЋР В Р’В°Р РЋРІР‚С™ {chat_ref!r}: {exc}") from exc
+            raise ValueError(f"Не удалось вступить в чат {chat_ref!r}: {exc}") from exc
         finally:
             await tg.disconnect()
 
@@ -975,7 +986,7 @@ class ChatAutomationService:
 
         model = await self.app_settings.get_effective_openai_model()
         group_details = await self.ai.generate_group_details(description, model=model)
-        title = group_details.get("title", "Р В РЎСљР В РЎвЂўР В Р вЂ Р В Р’В°Р РЋР РЏ Р В РЎвЂ“Р РЋР вЂљР РЋРЎвЂњР В РЎвЂ”Р В РЎвЂ”Р В Р’В°")
+        title = group_details.get("title", "Новая группа")
         about = group_details.get("about", description)[:255]
         username = group_details.get("username", None)
         messages = group_details.get("messages", [])
